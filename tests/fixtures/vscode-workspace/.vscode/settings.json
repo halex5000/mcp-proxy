@@ -1,0 +1,5 @@
+{
+  "managedConnections.enabledConnections": ["test-echo"],
+  "telemetry.telemetryLevel": "off",
+  "extensions.ignoreRecommendations": true
+}

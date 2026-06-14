@@ -217,6 +217,7 @@ npm run build
 npm run smoke
 npm test
 npm run test:extension-ui
+npm run test:vscode
 ```
 
 `npm run smoke` boots the gateway, configures `test-echo`, verifies `/control/status`, initializes MCP over HTTP, lists tools, invokes echo, proves unsafe tool filtering, simulates a downstream crash, and recovers with Restart.
@@ -224,6 +225,8 @@ npm run test:extension-ui
 `npm test` adds unit coverage for health state normalization, tool filtering, Connections panel presentation, command rules, and the gateway integration path.
 
 `npm run test:extension-ui` runs only the pure Connections panel and command-rule tests. These verify all required user-facing states without launching VS Code.
+
+`npm run test:vscode` launches a real Extension Development Host using `@vscode/test-electron`, activates the extension, verifies command contributions, and runs gateway-backed commands against the `Test Echo` fixture. Set `VSCODE_TEST_EXECUTABLE=/path/to/Code` to reuse a local VS Code build instead of downloading one.
 
 Manual proof docs:
 

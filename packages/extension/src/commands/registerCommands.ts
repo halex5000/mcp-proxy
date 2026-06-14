@@ -165,20 +165,14 @@ export function registerCommands(
 
     vscode.commands.registerCommand(
       "managedConnections.simulateConnectionMode",
-      async (item?: ConnectionTreeItem) => {
+      async (item?: ConnectionTreeItem, requestedMode?: SimulationMode) => {
         const id = item?.connectionId ?? (await pickConnection("Simulate which connection?"));
         if (!id) return;
-        const picked = await vscode.window.showQuickPick(
-          SIMULATION_MODES.map((mode) => ({
-            label: mode,
-            description: simulationDescription(mode),
-          })),
-          { placeHolder: "Choose a simulation mode" }
-        );
-        if (!picked) return;
+        const mode = requestedMode ?? (await pickSimulationMode());
+        if (!mode) return;
 
-        await withProgress(`Simulating ${picked.label} for ${id}...`, async () => {
-          await gatewayClient.simulate(id, picked.label as SimulationMode);
+        await withProgress(`Simulating ${mode} for ${id}...`, async () => {
+          await gatewayClient.simulate(id, mode);
           treeProvider.refresh();
         });
       }
@@ -199,6 +193,17 @@ async function pickConnection(prompt: string): Promise<ConnectionId | undefined>
     matchOnDescription: true,
   });
   return picked?.id as ConnectionId | undefined;
+}
+
+async function pickSimulationMode(): Promise<SimulationMode | undefined> {
+  const picked = await vscode.window.showQuickPick(
+    SIMULATION_MODES.map((mode) => ({
+      label: mode,
+      description: simulationDescription(mode),
+    })),
+    { placeHolder: "Choose a simulation mode" }
+  );
+  return picked?.label as SimulationMode | undefined;
 }
 
 async function toggleConnection(id: ConnectionId, enable: boolean): Promise<void> {

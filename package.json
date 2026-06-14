@@ -14,11 +14,15 @@
     "test": "npm run build && node --test tests/*.test.mjs",
     "test:unit": "npm run build && node --test tests/unit.test.mjs",
     "test:extension-ui": "npm run build && node --test tests/extension-ui.test.mjs",
+    "test:vscode": "npm run build && node tests/vscode-extension-host/run.mjs",
     "test:integration": "npm run build && node --test tests/gateway.integration.test.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^3.0.0"
   }
 }

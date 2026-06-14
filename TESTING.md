@@ -106,6 +106,13 @@ Run the automated proof:
 npm run smoke
 npm test
 npm run test:extension-ui
+npm run test:vscode
+```
+
+`npm run test:vscode` opens a real VS Code Extension Development Host through `@vscode/test-electron`. It is slower than the other tests and may download a VS Code build the first time. To use an installed VS Code build instead:
+
+```bash
+VSCODE_TEST_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Electron" npm run test:vscode
 ```
 
 ---
