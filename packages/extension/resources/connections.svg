@@ -1,0 +1,18 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Connections">
+  <style>
+    .connection-stroke {
+      stroke: #424242;
+    }
+    @media (prefers-color-scheme: dark) {
+      .connection-stroke {
+        stroke: #d7d7d7;
+      }
+    }
+  </style>
+  <path class="connection-stroke" d="M8 7.5H5.75C4.23 7.5 3 8.73 3 10.25v3.5C3 15.27 4.23 16.5 5.75 16.5H8" stroke-width="1.8" stroke-linecap="round"/>
+  <path class="connection-stroke" d="M16 7.5h2.25C19.77 7.5 21 8.73 21 10.25v3.5c0 1.52-1.23 2.75-2.75 2.75H16" stroke-width="1.8" stroke-linecap="round"/>
+  <path class="connection-stroke" d="M8.25 12h7.5" stroke-width="1.8" stroke-linecap="round"/>
+  <circle class="connection-stroke" cx="8" cy="12" r="2.6" stroke-width="1.8"/>
+  <circle class="connection-stroke" cx="16" cy="12" r="2.6" stroke-width="1.8"/>
+  <path class="connection-stroke" d="M12 4.25v3M12 16.75v3" stroke-width="1.8" stroke-linecap="round"/>
+</svg>

@@ -42,6 +42,8 @@ You should see four clean build outputs:
 code .
 ```
 
+For the most literal local run-through, follow [LOCAL_RUN.md](LOCAL_RUN.md).
+
 When it opens, **accept the "Install recommended extensions" prompt** if it appears (for TypeScript IntelliSense).
 
 ---
@@ -66,7 +68,8 @@ This will:
 In the Extension Development Host window:
 
 1. Look for the **Connections icon** in the Activity Bar (left sidebar) — it looks like a plug/link icon.
-2. Click it to open the **Connections** panel.
+2. The icon is a small linked-nodes/network plug symbol.
+3. Click it to open the **Connections** panel.
 
 You should see all five connections listed:
 
@@ -78,6 +81,14 @@ CONNECTIONS
   ○ Jira & Confluence     Not set up
   ⊘ Browser Automation    Disabled (safe mode)
 ```
+
+Run the one-command setup check from Command Palette:
+
+```text
+Managed Connections: Verify Local Setup
+```
+
+It opens a markdown report and should mark the gateway, `/control/status`, MCP endpoint, Test Echo, visible tools, and unsafe-tool check as passing.
 
 > If the panel doesn't appear, check **View → Open View → Connections**.
 
@@ -365,7 +376,7 @@ Expected output:
 
 | Problem | Likely cause | Fix |
 |---|---|---|
-| Connections panel doesn't appear | Extension didn't activate | Check **Output → Managed Connections — Gateway** for errors |
+| Connections panel doesn't appear | Extension didn't activate | Check **Output → Managed Connections Gateway** for errors |
 | "Gateway failed to start" toast | Node.js not in PATH, or dist not built | Run `npm run build`, check Node.js ≥ 20 |
 | GitHub shows "Needs sign-in" forever | VS Code GitHub auth not set up | Sign into GitHub via the Accounts icon (bottom-left of VS Code) |
 | Atlassian "Setup needed" after install | npx cache not updated | Run `npx --yes @atlassian/mcp-atlassian --version` in terminal |
@@ -379,7 +390,7 @@ Expected output:
 
 Two output channels are available in the Extension Development Host:
 
-- **Managed Connections — Gateway**: stdout/stderr from the gateway process
+- **Managed Connections Gateway**: stdout/stderr from the gateway process
 - **Managed Connections** (if using LogOutputChannel): extension-level logs
 
 Access via **View → Output** → dropdown in the top-right of the Output panel.

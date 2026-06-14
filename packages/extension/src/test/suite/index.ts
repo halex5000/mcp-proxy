@@ -13,9 +13,11 @@ const TEST_ITEM = {
 };
 
 const REQUIRED_COMMANDS = [
+  "managedConnections.verifyLocalSetup",
   "managedConnections.refresh",
   "managedConnections.restart",
   "managedConnections.openDiagnostics",
+  "managedConnections.copyDiagnosticsJson",
   "managedConnections.simulateConnectionMode",
   "managedConnections.showGatewayOutput",
 ];
@@ -91,7 +93,18 @@ async function testGatewayBackedCommands(): Promise<void> {
     TEST_ITEM,
     "ready"
   );
+  await vscode.commands.executeCommand("managedConnections.copyDiagnosticsJson", TEST_ITEM);
   await vscode.commands.executeCommand("managedConnections.openDiagnostics", TEST_ITEM);
+  const verification = await vscode.commands.executeCommand<{
+    checks: Array<{ label: string; state: string }>;
+    markdown: string;
+  }>("managedConnections.verifyLocalSetup", { silent: true });
+  assert.ok(verification?.markdown.includes("Managed Connections Local Setup Verification"));
+  assert.ok(
+    verification?.checks.some(
+      (check) => check.label === "Test Echo connected" && check.state === "pass"
+    )
+  );
 }
 
 function findExtension(): vscode.Extension<unknown> {

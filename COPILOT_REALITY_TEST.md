@@ -90,6 +90,6 @@ Pass response:
 
 1. Confirm `npm run build` succeeds.
 2. Confirm the Connections panel shows `Test Echo - Connected`.
-3. Open `Output > Managed Connections - Gateway` and look for `GATEWAY_READY port=...`.
+3. Open `Output > Managed Connections Gateway` and look for `GATEWAY_READY port=...`.
 4. Restart the Extension Development Host.
 5. In Copilot tools UI, manually start/enable `Managed Connections` once. This is a VS Code first-run MCP caching behavior, not an app config step.

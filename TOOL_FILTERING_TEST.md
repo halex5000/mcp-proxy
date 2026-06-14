@@ -28,7 +28,7 @@ In the Connections panel:
 Expected control-plane status:
 
 ```bash
-# Use the port shown in Output > Managed Connections - Gateway
+# Use the port shown in Output > Managed Connections Gateway
 PORT=51234
 curl -s -H "Authorization: Bearer <token>" \
   http://127.0.0.1:$PORT/control/status

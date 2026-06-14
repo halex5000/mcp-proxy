@@ -35,7 +35,7 @@
         {
           "id": "managedConnections",
           "title": "Connections",
-          "icon": "resources/connections-icon.svg"
+          "icon": "resources/connections.svg"
         }
       ]
     },
@@ -44,12 +44,18 @@
         {
           "id": "managedConnections.connectionsView",
           "name": "Connections",
-          "icon": "resources/connections-icon.svg",
+          "icon": "resources/connections.svg",
           "contextualTitle": "Connections"
         }
       ]
     },
     "commands": [
+      {
+        "command": "managedConnections.verifyLocalSetup",
+        "title": "Verify Local Setup",
+        "icon": "$(checklist)",
+        "category": "Managed Connections"
+      },
       {
         "command": "managedConnections.refresh",
         "title": "Refresh Connections",
@@ -66,6 +72,12 @@
         "command": "managedConnections.openDiagnostics",
         "title": "Open Diagnostics",
         "icon": "$(output)",
+        "category": "Connections"
+      },
+      {
+        "command": "managedConnections.copyDiagnosticsJson",
+        "title": "Copy Diagnostics JSON",
+        "icon": "$(copy)",
         "category": "Connections"
       },
       {
@@ -122,13 +134,23 @@
           "command": "managedConnections.refresh",
           "when": "view == managedConnections.connectionsView",
           "group": "navigation"
+        },
+        {
+          "command": "managedConnections.verifyLocalSetup",
+          "when": "view == managedConnections.connectionsView",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
         {
           "command": "managedConnections.restart",
-          "when": "viewItem == connection-crashed || viewItem == connection-degraded",
+          "when": "viewItem =~ /^connection-/",
           "group": "inline"
+        },
+        {
+          "command": "managedConnections.refresh",
+          "when": "viewItem =~ /^connection-/",
+          "group": "context@0"
         },
         {
           "command": "managedConnections.signIn",
@@ -136,19 +158,24 @@
           "group": "inline"
         },
         {
+          "command": "managedConnections.simulateConnectionMode",
+          "when": "viewItem =~ /^connection-/",
+          "group": "context@1"
+        },
+        {
           "command": "managedConnections.openDiagnostics",
           "when": "viewItem =~ /^connection-/",
-          "group": "context"
+          "group": "context@2"
+        },
+        {
+          "command": "managedConnections.copyDiagnosticsJson",
+          "when": "viewItem =~ /^connection-/",
+          "group": "context@3"
         },
         {
           "command": "managedConnections.resetConnectionState",
           "when": "viewItem =~ /^connection-/",
           "group": "context@9"
-        },
-        {
-          "command": "managedConnections.simulateConnectionMode",
-          "when": "viewItem =~ /^connection-/",
-          "group": "context@8"
         }
       ]
     },

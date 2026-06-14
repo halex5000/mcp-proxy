@@ -130,6 +130,8 @@ packages/
                       registerCommands.ts            — refresh, restart, sign-in, diagnostics, etc.
                     ui/
                       DiagnosticsPanel.ts            — webview: logs, errors, env summary
+                    resources/
+                      connections.svg                — Activity Bar icon for the Connections view
 ```
 
 ---
@@ -230,6 +232,7 @@ npm run test:vscode
 
 Manual proof docs:
 
+- [LOCAL_RUN.md](LOCAL_RUN.md)
 - [SMOKE_TEST.md](SMOKE_TEST.md)
 - [COPILOT_REALITY_TEST.md](COPILOT_REALITY_TEST.md)
 - [SLAY_TEST.md](SLAY_TEST.md)
@@ -238,6 +241,7 @@ Manual proof docs:
 - [EXTENSION_UI_TEST.md](EXTENSION_UI_TEST.md)
 - [ASSISTANT_DIAGNOSTICS_TEST.md](ASSISTANT_DIAGNOSTICS_TEST.md)
 - [DEMO_SCRIPT.md](DEMO_SCRIPT.md)
+- [WORK_EXTENSION_INTEGRATION.md](WORK_EXTENSION_INTEGRATION.md)
 
 ### Type-check all packages
 ```bash

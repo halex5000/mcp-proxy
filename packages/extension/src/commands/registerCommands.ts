@@ -6,8 +6,12 @@ import type { GatewayClient } from "../gateway/GatewayClient.js";
 import type { GatewayProcess } from "../gateway/GatewayProcess.js";
 import type { DiagnosticsPanel } from "../ui/DiagnosticsPanel.js";
 import type { ConnectionId, SimulationMode } from "@mcp-proxy/shared";
-import { SIMULATION_MODES } from "@mcp-proxy/shared";
-import { nextEnabledConnections, simulationDescription } from "./CommandRules.js";
+import {
+  nextEnabledConnections,
+  SIMULATION_PICKER_MODES,
+  simulationDescription,
+} from "./CommandRules.js";
+import { verifyLocalSetup } from "./SetupVerifier.js";
 
 export function registerCommands(
   context: vscode.ExtensionContext,
@@ -23,6 +27,16 @@ export function registerCommands(
     opts;
 
   context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "managedConnections.verifyLocalSetup",
+      async (options?: { silent?: boolean }) =>
+        await verifyLocalSetup({
+          gatewayClient,
+          gatewayProcess,
+          silent: options?.silent,
+        })
+    ),
+
     vscode.commands.registerCommand("managedConnections.refresh", () => {
       treeProvider.refresh();
     }),
@@ -46,6 +60,24 @@ export function registerCommands(
         if (!id) return;
         const name = item?.label as string ?? id;
         await diagnosticsPanel.open(id, name);
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      "managedConnections.copyDiagnosticsJson",
+      async (item?: ConnectionTreeItem) => {
+        const id = item?.connectionId ?? (await pickConnection("Copy diagnostics for which connection?"));
+        if (!id) return;
+
+        try {
+          const diagnostics = await gatewayClient.getDiagnostics(id);
+          await vscode.env.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+          vscode.window.showInformationMessage(`Copied diagnostics JSON for ${id}.`);
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `Could not copy diagnostics for ${id}: ${String(err)}`
+          );
+        }
       }
     ),
 
@@ -197,7 +229,7 @@ async function pickConnection(prompt: string): Promise<ConnectionId | undefined>
 
 async function pickSimulationMode(): Promise<SimulationMode | undefined> {
   const picked = await vscode.window.showQuickPick(
-    SIMULATION_MODES.map((mode) => ({
+    SIMULATION_PICKER_MODES.map((mode) => ({
       label: mode,
       description: simulationDescription(mode),
     })),

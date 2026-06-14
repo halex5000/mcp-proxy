@@ -37,7 +37,7 @@ export class GatewayProcess implements vscode.Disposable {
     this.extensionPath = context.extensionPath;
     this._authToken = crypto.randomBytes(32).toString("hex");
     this.outputChannel = vscode.window.createOutputChannel(
-      "Managed Connections — Gateway"
+      "Managed Connections Gateway"
     );
   }
 

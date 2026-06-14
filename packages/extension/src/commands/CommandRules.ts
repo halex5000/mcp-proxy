@@ -1,5 +1,14 @@
 import type { ConnectionId, SimulationMode } from "@mcp-proxy/shared";
 
+export const SIMULATION_PICKER_MODES: SimulationMode[] = [
+  "ready",
+  "crash_after_delay",
+  "auth_required",
+  "dependency_missing",
+  "version_mismatch",
+  "unsafe_tools",
+];
+
 export function nextEnabledConnections(
   current: string[],
   id: ConnectionId,

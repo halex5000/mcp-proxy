@@ -92,10 +92,12 @@ Expected:
 
 1. Open this repo in VS Code.
 2. Press `F5` and choose `Run Extension`.
-3. In the Extension Development Host, open the Connections activity view.
+3. In the Extension Development Host, click the Connections Activity Bar icon. It looks like linked nodes / a small network plug.
 4. Expected: `Test Echo` appears as `Connected`.
-5. Open `Output > Managed Connections - Gateway`.
+5. Open `Output > Managed Connections Gateway`.
 6. Expected: gateway output includes `GATEWAY_READY port=XXXXX`.
+7. Run Command Palette -> `Managed Connections: Verify Local Setup`.
+8. Expected: a markdown report opens with passing checks for the gateway, control API, MCP endpoint, and Test Echo.
 
 VS Code MCP registration check:
 

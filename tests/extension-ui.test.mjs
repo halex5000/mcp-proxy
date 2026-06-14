@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
+const extensionManifest = require("../packages/extension/package.json");
 const shared = require("../packages/shared/dist/index.js");
 const {
   presentConnection,
@@ -10,6 +13,7 @@ const {
 } = require("../packages/extension/dist/providers/ConnectionPresentation.js");
 const {
   nextEnabledConnections,
+  SIMULATION_PICKER_MODES,
   simulationDescription,
 } = require("../packages/extension/dist/commands/CommandRules.js");
 
@@ -37,6 +41,19 @@ const RAW_DETAIL_PATTERNS = [
   /mcp\.json/i,
   /GATEWAY_READY/i,
 ];
+
+test("extension manifest uses a real Connections Activity Bar icon", () => {
+  const container = extensionManifest.contributes.viewsContainers.activitybar.find(
+    (entry) => entry.id === "managedConnections"
+  );
+  assert.equal(container.title, "Connections");
+  assert.equal(container.icon, "resources/connections.svg");
+  assert.equal(
+    existsSync(resolve("packages/extension", container.icon)),
+    true,
+    `${container.icon} should exist`
+  );
+});
 
 test("connection presentation covers every required UI state", () => {
   for (const [status, expected] of Object.entries(EXPECTED_STATES)) {
@@ -110,6 +127,17 @@ test("every simulation mode has a picker description", () => {
   for (const mode of shared.SIMULATION_MODES) {
     assert.ok(simulationDescription(mode).length > 0, mode);
   }
+});
+
+test("simulation picker exposes the demo-friendly modes", () => {
+  assert.deepEqual(SIMULATION_PICKER_MODES, [
+    "ready",
+    "crash_after_delay",
+    "auth_required",
+    "dependency_missing",
+    "version_mismatch",
+    "unsafe_tools",
+  ]);
 });
 
 function healthFor(status, overrides = {}) {
