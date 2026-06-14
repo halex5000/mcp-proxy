@@ -1,0 +1,184 @@
+{
+  "name": "managed-mcp-connections",
+  "displayName": "Managed Connections",
+  "description": "Connect GitHub Copilot to your tools — GitHub, Jira, Confluence, browser automation, and more — without touching config files.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "your-publisher",
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "package": "vsce package"
+  },
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "managed-connections",
+        "label": "Managed Connections"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "managedConnections",
+          "title": "Connections",
+          "icon": "resources/connections-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "managedConnections": [
+        {
+          "id": "managedConnections.connectionsView",
+          "name": "Connections",
+          "icon": "resources/connections-icon.svg",
+          "contextualTitle": "Connections"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "managedConnections.refresh",
+        "title": "Refresh Connections",
+        "icon": "$(refresh)",
+        "category": "Connections"
+      },
+      {
+        "command": "managedConnections.restart",
+        "title": "Restart Connection",
+        "icon": "$(debug-restart)",
+        "category": "Connections"
+      },
+      {
+        "command": "managedConnections.openDiagnostics",
+        "title": "Open Diagnostics",
+        "icon": "$(output)",
+        "category": "Connections"
+      },
+      {
+        "command": "managedConnections.signIn",
+        "title": "Sign In",
+        "icon": "$(key)",
+        "category": "Connections"
+      },
+      {
+        "command": "managedConnections.signOut",
+        "title": "Sign Out",
+        "icon": "$(sign-out)",
+        "category": "Connections"
+      },
+      {
+        "command": "managedConnections.openSettings",
+        "title": "Open Settings",
+        "icon": "$(settings-gear)",
+        "category": "Connections"
+      },
+      {
+        "command": "managedConnections.enableConnection",
+        "title": "Enable",
+        "icon": "$(check)",
+        "category": "Connections"
+      },
+      {
+        "command": "managedConnections.disableConnection",
+        "title": "Disable",
+        "icon": "$(circle-slash)",
+        "category": "Connections"
+      },
+      {
+        "command": "managedConnections.installDependency",
+        "title": "Install Required Tools",
+        "icon": "$(cloud-download)",
+        "category": "Connections"
+      },
+      {
+        "command": "managedConnections.resetConnectionState",
+        "title": "Reset Connection State",
+        "category": "Connections"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "managedConnections.refresh",
+          "when": "view == managedConnections.connectionsView",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "managedConnections.restart",
+          "when": "viewItem == connection-crashed || viewItem == connection-degraded",
+          "group": "inline"
+        },
+        {
+          "command": "managedConnections.signIn",
+          "when": "viewItem == connection-auth_required",
+          "group": "inline"
+        },
+        {
+          "command": "managedConnections.openDiagnostics",
+          "when": "viewItem =~ /^connection-/",
+          "group": "context"
+        },
+        {
+          "command": "managedConnections.resetConnectionState",
+          "when": "viewItem =~ /^connection-/",
+          "group": "context@9"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Managed Connections",
+      "properties": {
+        "managedConnections.enabledConnections": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["github"],
+          "description": "Which connections to activate. Connections with 'unsafe' tools (e.g., browser automation with code execution) must be explicitly listed here.",
+          "scope": "window"
+        },
+        "managedConnections.atlassian.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Your Atlassian base URL, e.g. https://yourcompany.atlassian.net",
+          "scope": "window"
+        },
+        "managedConnections.playwright.safeMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Restrict browser automation to read-only browsing. Disabling allows form submission and JavaScript execution.",
+          "scope": "window"
+        },
+        "managedConnections.gateway.logLevel": {
+          "type": "string",
+          "enum": ["error", "warn", "info", "debug"],
+          "default": "warn",
+          "description": "Gateway process log verbosity.",
+          "scope": "window"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@mcp-proxy/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.99.0",
+    "typescript": "^5.4.0"
+  }
+}
