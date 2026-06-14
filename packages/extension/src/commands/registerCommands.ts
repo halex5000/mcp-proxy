@@ -5,6 +5,7 @@ import type { ConnectionTreeItem } from "../providers/ConnectionsTreeProvider.js
 import type { GatewayClient } from "../gateway/GatewayClient.js";
 import type { GatewayProcess } from "../gateway/GatewayProcess.js";
 import type { DiagnosticsPanel } from "../ui/DiagnosticsPanel.js";
+import type { HealthMonitor } from "../health/HealthMonitor.js";
 import type { ConnectionId, SimulationMode } from "@mcp-proxy/shared";
 import {
   nextEnabledConnections,
@@ -12,6 +13,7 @@ import {
   simulationDescription,
 } from "./CommandRules.js";
 import { verifyLocalSetup } from "./SetupVerifier.js";
+import { ConnectionsCenterPanel } from "../webview/ConnectionsCenterPanel.js";
 
 export function registerCommands(
   context: vscode.ExtensionContext,
@@ -21,9 +23,10 @@ export function registerCommands(
     gatewayClient: GatewayClient;
     gatewayProcess: GatewayProcess;
     diagnosticsPanel: DiagnosticsPanel;
+    healthMonitor: HealthMonitor;
   }
 ): void {
-  const { treeProvider, connectionManager, gatewayClient, gatewayProcess, diagnosticsPanel } =
+  const { treeProvider, connectionManager, gatewayClient, gatewayProcess, diagnosticsPanel, healthMonitor } =
     opts;
 
   context.subscriptions.push(
@@ -212,6 +215,10 @@ export function registerCommands(
 
     vscode.commands.registerCommand("managedConnections.showGatewayOutput", () => {
       gatewayProcess.showOutput();
+    }),
+
+    vscode.commands.registerCommand("managedConnections.openConnectionsCenter", () => {
+      ConnectionsCenterPanel.createOrShow(context, gatewayClient, healthMonitor, connectionManager);
     })
   );
 }

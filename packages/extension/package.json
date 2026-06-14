@@ -126,14 +126,25 @@
         "title": "Simulate Connection State",
         "icon": "$(beaker)",
         "category": "Connections"
+      },
+      {
+        "command": "managedConnections.openConnectionsCenter",
+        "title": "Open Connections Center",
+        "icon": "$(layout-panel)",
+        "category": "Managed Connections"
       }
     ],
     "menus": {
       "view/title": [
         {
+          "command": "managedConnections.openConnectionsCenter",
+          "when": "view == managedConnections.connectionsView",
+          "group": "navigation@0"
+        },
+        {
           "command": "managedConnections.refresh",
           "when": "view == managedConnections.connectionsView",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "managedConnections.verifyLocalSetup",

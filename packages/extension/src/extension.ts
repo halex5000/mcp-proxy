@@ -117,6 +117,7 @@ export async function activate(
     gatewayClient,
     gatewayProcess,
     diagnosticsPanel,
+    healthMonitor,
   });
 }
 
