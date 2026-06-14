@@ -114,9 +114,10 @@ export class ControlServer {
     const proxy = this.proxies.get(id);
     const config = this.config?.connections.find((c) => c.id === id);
 
-    const health = this.healthAggregator.compute(
+    const health = this.healthAggregator.computeWithConfig(
       id,
       config?.definition.name ?? id,
+      config,
       proc,
       proxy
     );
@@ -132,18 +133,26 @@ export class ControlServer {
 
   private buildConnectionStatuses() {
     const statuses = [];
-    for (const [id, proc] of this.supervisor.getAllProcesses()) {
-      const proxy = this.proxies.get(id);
-      const config = this.config?.connections.find((c) => c.id === id);
-      const health = this.healthAggregator.compute(
-        id,
-        config?.definition.name ?? id,
+
+    // Include all configured connections, even disabled ones, so the extension
+    // can show healthOverride states (unsafe_disabled, dependency_missing).
+    const allConfigs = this.config?.connections ?? [];
+    const seenIds = new Set<ConnectionId>();
+
+    for (const config of allConfigs) {
+      seenIds.add(config.id);
+      const proc = this.supervisor.getProcess(config.id);
+      const proxy = this.proxies.get(config.id);
+      const health = this.healthAggregator.computeWithConfig(
+        config.id,
+        config.definition.name,
+        config,
         proc,
         proxy
       );
       statuses.push({
-        id,
-        name: config?.definition.name ?? id,
+        id: config.id,
+        name: config.definition.name,
         health,
         tools: proxy?.tools.map((t) => ({
           name: t.name,
@@ -153,6 +162,25 @@ export class ControlServer {
         })) ?? [],
       });
     }
+
+    // Also include any running processes not in current config (edge case on config reload)
+    for (const [id, proc] of this.supervisor.getAllProcesses()) {
+      if (seenIds.has(id)) continue;
+      const proxy = this.proxies.get(id);
+      const health = this.healthAggregator.compute(id, id, proc, proxy);
+      statuses.push({
+        id,
+        name: id,
+        health,
+        tools: proxy?.tools.map((t) => ({
+          name: t.name,
+          description: t.description ?? "",
+          isVisible: t.isVisible,
+          isSafe: t.isSafe,
+        })) ?? [],
+      });
+    }
+
     return statuses;
   }
 }

@@ -1,0 +1,50 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/extension"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/packages/extension/dist/**/*.js",
+        "${workspaceFolder}/packages/gateway/dist/**/*.js"
+      ],
+      "preLaunchTask": "build-all",
+      "sourceMaps": true,
+      "smartStep": true,
+      "env": {
+        "NODE_ENV": "development"
+      }
+    },
+    {
+      "name": "Run Extension (no build)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/extension"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/packages/extension/dist/**/*.js",
+        "${workspaceFolder}/packages/gateway/dist/**/*.js"
+      ],
+      "sourceMaps": true
+    },
+    {
+      "name": "Debug Gateway (standalone)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/packages/gateway/dist/index.js",
+      "env": {
+        "GATEWAY_AUTH_TOKEN": "devtoken",
+        "NODE_ENV": "development"
+      },
+      "console": "integratedTerminal",
+      "outFiles": ["${workspaceFolder}/packages/gateway/dist/**/*.js"],
+      "sourceMaps": true,
+      "preLaunchTask": "build-gateway"
+    }
+  ]
+}
