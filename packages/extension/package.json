@@ -84,7 +84,7 @@
         "command": "managedConnections.signIn",
         "title": "Sign In",
         "icon": "$(key)",
-        "category": "Connections"
+        "category": "Managed Connections"
       },
       {
         "command": "managedConnections.signOut",

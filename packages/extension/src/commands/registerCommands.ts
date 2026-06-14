@@ -8,6 +8,7 @@ import type { DiagnosticsPanel } from "../ui/DiagnosticsPanel.js";
 import type { HealthMonitor } from "../health/HealthMonitor.js";
 import type { ConnectionId, SimulationMode } from "@mcp-proxy/shared";
 import {
+  isAuthCapable,
   nextEnabledConnections,
   SIMULATION_PICKER_MODES,
   simulationDescription,
@@ -86,8 +87,13 @@ export function registerCommands(
 
     vscode.commands.registerCommand(
       "managedConnections.signIn",
-      async (item?: ConnectionTreeItem) => {
-        const id = item?.connectionId ?? (await pickConnection("Sign in to which connection?"));
+      async (arg?: ConnectionTreeItem | ConnectionId | { connectionId?: ConnectionId }) => {
+        // Contextual invocation (TreeView row, webview card, crash/auth
+        // notification) carries a connection id and signs in directly — no
+        // picker. The Command Palette ("Managed Connections: Sign In") passes
+        // nothing and gets a picker filtered to auth-capable / auth-required
+        // connections only.
+        const id = resolveConnectionId(arg) ?? (await pickAuthConnection(healthMonitor));
         if (!id) return;
         await connectionManager.signIn(id);
         treeProvider.refresh();
@@ -229,6 +235,58 @@ async function pickConnection(prompt: string): Promise<ConnectionId | undefined>
   const picks = CONNECTION_REGISTRY.map((c) => ({ label: c.name, id: c.id }));
   const picked = await vscode.window.showQuickPick(picks, {
     placeHolder: prompt,
+    matchOnDescription: true,
+  });
+  return picked?.id as ConnectionId | undefined;
+}
+
+/**
+ * Normalizes the various shapes a command can be invoked with: a TreeView item,
+ * a bare connection id string, or a `{ connectionId }` object (used by the
+ * webview and notification actions). Returns undefined for a Command Palette
+ * invocation, which carries no argument.
+ */
+function resolveConnectionId(
+  arg: ConnectionTreeItem | ConnectionId | { connectionId?: ConnectionId } | undefined
+): ConnectionId | undefined {
+  if (!arg) return undefined;
+  if (typeof arg === "string") return arg;
+  return arg.connectionId;
+}
+
+/**
+ * Picker for the global "Sign In" command. Only lists connections where sign-in
+ * is a valid action: auth-capable connections (GitHub OAuth, Atlassian token) or
+ * any connection currently reporting auth_required. If exactly one qualifies, it
+ * is selected without prompting.
+ */
+async function pickAuthConnection(
+  healthMonitor: HealthMonitor
+): Promise<ConnectionId | undefined> {
+  const { CONNECTION_REGISTRY } = await import("../connections/ConnectionRegistry.js");
+
+  const picks = CONNECTION_REGISTRY.filter(
+    (c) =>
+      isAuthCapable(c) || healthMonitor.getHealth(c.id)?.status === "auth_required"
+  ).map((c) => ({
+    label: c.name,
+    id: c.id,
+    description:
+      healthMonitor.getHealth(c.id)?.status === "auth_required"
+        ? "Sign-in required"
+        : undefined,
+  }));
+
+  if (picks.length === 0) {
+    vscode.window.showInformationMessage(
+      "None of the configured connections support sign-in."
+    );
+    return undefined;
+  }
+  if (picks.length === 1) return picks[0].id as ConnectionId;
+
+  const picked = await vscode.window.showQuickPick(picks, {
+    placeHolder: "Sign in to which connection?",
     matchOnDescription: true,
   });
   return picked?.id as ConnectionId | undefined;

@@ -1,4 +1,16 @@
-import type { ConnectionId, SimulationMode } from "@mcp-proxy/shared";
+import type { ConnectionDefinition, ConnectionId, SimulationMode } from "@mcp-proxy/shared";
+
+/**
+ * A connection is "auth-capable" when signing in is a meaningful action for it:
+ * either it authenticates through an OAuth provider (GitHub) or it requires a
+ * secret credential the user must supply (Atlassian API token). Connections with
+ * no auth surface — Test Echo, Project Knowledge, Browser Automation — are
+ * excluded so they never clutter the Sign In picker.
+ */
+export function isAuthCapable(def: ConnectionDefinition): boolean {
+  if (def.oauthConfig) return true;
+  return def.requiredConfig.some((field) => field.type === "secret");
+}
 
 export const SIMULATION_PICKER_MODES: SimulationMode[] = [
   "ready",

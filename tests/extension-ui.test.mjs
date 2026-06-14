@@ -12,10 +12,14 @@ const {
   presentConnectionInfoItems,
 } = require("../packages/extension/dist/providers/ConnectionPresentation.js");
 const {
+  isAuthCapable,
   nextEnabledConnections,
   SIMULATION_PICKER_MODES,
   simulationDescription,
 } = require("../packages/extension/dist/commands/CommandRules.js");
+const {
+  CONNECTION_REGISTRY,
+} = require("../packages/extension/dist/connections/ConnectionRegistry.js");
 
 const EXPECTED_STATES = {
   ready: { iconId: "check", primaryAction: undefined, label: "Connected" },
@@ -138,6 +142,20 @@ test("simulation picker exposes the demo-friendly modes", () => {
     "version_mismatch",
     "unsafe_tools",
   ]);
+});
+
+test("sign-in picker only includes auth-capable connections", () => {
+  const authCapableIds = CONNECTION_REGISTRY.filter(isAuthCapable).map((c) => c.id);
+
+  // GitHub (OAuth) and Atlassian (secret token) genuinely support sign-in.
+  assert.ok(authCapableIds.includes("github"), "github should be auth-capable");
+  assert.ok(authCapableIds.includes("atlassian"), "atlassian should be auth-capable");
+
+  // Test Echo, Project Knowledge, and Browser Automation have no auth surface
+  // and must never appear in a Sign In picker.
+  assert.equal(authCapableIds.includes("test-echo"), false);
+  assert.equal(authCapableIds.includes("local-knowledge"), false);
+  assert.equal(authCapableIds.includes("playwright"), false);
 });
 
 function healthFor(status, overrides = {}) {

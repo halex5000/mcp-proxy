@@ -80,9 +80,9 @@ export async function activate(
         )
         .then((choice) => {
           if (choice === "Restart") {
-            vscode.commands.executeCommand("managedConnections.restart");
+            vscode.commands.executeCommand("managedConnections.restart", { connectionId: id });
           } else if (choice === "Diagnostics") {
-            vscode.commands.executeCommand("managedConnections.openDiagnostics");
+            vscode.commands.executeCommand("managedConnections.openDiagnostics", { connectionId: id });
           }
         });
     }
@@ -94,7 +94,7 @@ export async function activate(
         )
         .then((choice) => {
           if (choice === "Sign In") {
-            vscode.commands.executeCommand("managedConnections.signIn");
+            vscode.commands.executeCommand("managedConnections.signIn", { connectionId: id });
           }
         });
     }
