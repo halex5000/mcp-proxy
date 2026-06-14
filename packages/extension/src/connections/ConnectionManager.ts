@@ -1,9 +1,12 @@
 import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
 import type { GatewayClient } from "../gateway/GatewayClient.js";
 import type {
   GatewayConfig,
   ActiveConnectionConfig,
   ConnectionId,
+  ConnectionDefinition,
 } from "@mcp-proxy/shared";
 import { HEALTH_MESSAGES } from "@mcp-proxy/shared";
 import { CONNECTION_REGISTRY } from "./ConnectionRegistry.js";
@@ -126,7 +129,7 @@ export class ConnectionManager implements vscode.Disposable {
 
   private async buildConfig(): Promise<GatewayConfig> {
     const settings = vscode.workspace.getConfiguration("managedConnections");
-    const enabledIds: string[] = settings.get("enabledConnections") ?? ["github", "local-knowledge"];
+    const enabledIds: string[] = settings.get("enabledConnections") ?? ["github", "test-echo"];
 
     // Build configs only for local-stdio connections — remote ones go direct to VS Code
     const localDefinitions = CONNECTION_REGISTRY.filter(
@@ -141,7 +144,7 @@ export class ConnectionManager implements vscode.Disposable {
   }
 
   private async buildConnectionConfig(
-    def: import("@mcp-proxy/shared").ConnectionDefinition,
+    def: ConnectionDefinition,
     enabledIds: string[]
   ): Promise<ActiveConnectionConfig> {
     const requestedEnabled = enabledIds.includes(def.id);
@@ -196,7 +199,8 @@ export class ConnectionManager implements vscode.Disposable {
       };
     }
 
-    return { id: def.id, definition: def, enabled: true, settings };
+    const runtimeDefinition = this.resolveRuntimeDefinition(def);
+    return { id: def.id, definition: runtimeDefinition, enabled: true, settings };
   }
 
   private async resolveSettings(
@@ -209,6 +213,11 @@ export class ConnectionManager implements vscode.Disposable {
       case "local-knowledge": {
         const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (folder) settings["WORKSPACE_FOLDER"] = folder;
+        return { settings, authMissing: false };
+      }
+
+      case "test-echo": {
+        settings["FAKE_MCP_MODE"] = "ready";
         return { settings, authMissing: false };
       }
 
@@ -242,6 +251,29 @@ export class ConnectionManager implements vscode.Disposable {
       default:
         return { settings, authMissing: false };
     }
+  }
+
+  private resolveRuntimeDefinition(def: ConnectionDefinition): ConnectionDefinition {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+    const fakeServerEntrypoint = this.resolveFakeServerEntrypoint();
+
+    return {
+      ...def,
+      args: def.args?.map((arg) =>
+        arg
+          .replace("${workspaceFolder}", workspaceFolder)
+          .replace("${fakeMcpServerEntrypoint}", fakeServerEntrypoint)
+      ),
+    };
+  }
+
+  private resolveFakeServerEntrypoint(): string {
+    const candidates = [
+      path.join(this.context.extensionPath, "dist", "fake-mcp-server", "index.js"),
+      path.join(this.context.extensionPath, "..", "fake-mcp-server", "dist", "index.js"),
+    ];
+
+    return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[1];
   }
 
   // ── Atlassian sign-in flow ─────────────────────────────────────────────────

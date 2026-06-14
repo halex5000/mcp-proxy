@@ -9,6 +9,8 @@ import type {
   LogsResponse,
   ConfigureRequest,
   ConfigureResponse,
+  SimulateResponse,
+  SimulationMode,
 } from "@mcp-proxy/shared";
 import type { ConnectionId } from "@mcp-proxy/shared";
 
@@ -36,6 +38,10 @@ export class GatewayClient {
 
   async restart(id: ConnectionId): Promise<RestartResponse> {
     return this.post<RestartResponse>(`/connections/${id}/restart`, {});
+  }
+
+  async simulate(id: ConnectionId, mode: SimulationMode): Promise<SimulateResponse> {
+    return this.post<SimulateResponse>(`/connections/${id}/simulate`, { mode });
   }
 
   async getDiagnostics(id: ConnectionId): Promise<DiagnosticsResponse> {

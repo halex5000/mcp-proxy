@@ -1,0 +1,26 @@
+{
+  "gatewayVersion": "0.1.0",
+  "connections": [
+    {
+      "id": "test-echo",
+      "enabled": true,
+      "autoRestart": true,
+      "settings": {
+        "FAKE_MCP_MODE": "ready"
+      },
+      "definition": {
+        "id": "test-echo",
+        "name": "Test Echo",
+        "description": "Deterministic downstream MCP fixture for smoke, chaos, and filtering tests.",
+        "kind": "local-stdio",
+        "icon": "$(beaker)",
+        "requiredConfig": [],
+        "optionalConfig": [],
+        "safeByDefault": true,
+        "mode": "managed",
+        "command": "node",
+        "args": ["packages/fake-mcp-server/dist/index.js"]
+      }
+    }
+  ]
+}

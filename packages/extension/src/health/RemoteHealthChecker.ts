@@ -39,6 +39,9 @@ export class RemoteHealthChecker {
       // to avoid unnecessary network traffic on every health poll.
       const health = this.build("ready", "github");
       health.toolCount = -1; // unknown — VS Code tracks this, not us
+      health.assistantSummary =
+        `GitHub connection is ready. Signed in as ${session.account.label}. ` +
+        `GitHub tools (issues, PRs, code search, repos) are available.`;
       health.diagnostics = {
         connectionId: "github",
         crashCount: 0,
@@ -46,9 +49,7 @@ export class RemoteHealthChecker {
         environment: { GITHUB_USER: session.account.label },
         toolCount: -1,
         hiddenToolCount: 0,
-        assistantSummary:
-          `GitHub connection is ready. Signed in as ${session.account.label}. ` +
-          `GitHub tools (issues, PRs, code search, repos) are available.`,
+        assistantSummary: health.assistantSummary,
       };
       return health;
     } catch {
@@ -57,16 +58,28 @@ export class RemoteHealthChecker {
   }
 
   private build(status: ConnectionHealthStatus, id: string): ConnectionHealth {
+    const now = Date.now();
+    const message = HEALTH_MESSAGES[status];
+    const actions = actionsForStatus(status);
     return {
-      ...makeDefaultHealth(status),
+      ...makeDefaultHealth(status, id, "external"),
+      id,
+      mode: "external",
+      state: status,
       status,
       label: HEALTH_LABELS[status],
-      message: HEALTH_MESSAGES[status],
-      lastChecked: Date.now(),
+      userMessage: message,
+      message,
+      assistantSummary: message,
+      lastChecked: now,
+      lastCheckedAt: new Date(now).toISOString(),
+      restartCount: 0,
       crashCount: 0,
       toolCount: 0,
       hiddenToolCount: 0,
-      actions: actionsForStatus(status),
+      hiddenTools: [],
+      availableActions: actions,
+      actions,
     };
   }
 }

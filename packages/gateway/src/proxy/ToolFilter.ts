@@ -9,6 +9,7 @@ export interface RawTool {
 export interface FilteredTool extends RawTool {
   isVisible: boolean;
   isSafe: boolean;
+  hiddenReason?: string;
   /** Namespaced name exposed to Copilot, e.g. "github__create_issue" */
   publicName: string;
 }
@@ -23,6 +24,8 @@ const UNSAFE_TOOL_PATTERNS = [
   /run_command/i,
   /run_script/i,
   /shell_exec/i,
+  /delete_files/i,
+  /browser_run_code_unsafe/i,
   /eval_/i,
   /subprocess/i,
   /write_file/i,
@@ -44,19 +47,36 @@ export class ToolFilter {
       const isSafe = this.isSafe(tool.name);
       const isAllowed = this.isAllowed(tool.name);
       const isDenied = this.isDenied(tool.name);
-      const isConnectionUnsafe = !this.definition.safeByDefault;
+      const allowUnsafeTools = Boolean(this.definition.allowUnsafeTools);
 
-      // Connections marked unsafe require explicit enable at the connection level.
-      // Even if the connection is enabled, unsafe individual tools stay hidden.
-      const isVisible = isAllowed && !isDenied && (isSafe || !isConnectionUnsafe);
+      // Unsafe individual tools stay hidden unless this connection explicitly
+      // opts in for a test/demo mode. This is independent of whether the
+      // connection itself is safe-by-default.
+      const isVisible = isAllowed && !isDenied && (isSafe || allowUnsafeTools);
+      const hiddenReason = this.hiddenReason(isAllowed, isDenied, isSafe, allowUnsafeTools);
 
       return {
         ...tool,
         isVisible,
         isSafe,
+        hiddenReason,
         publicName: `${this.connectionId}__${tool.name}`,
       };
     });
+  }
+
+  private hiddenReason(
+    isAllowed: boolean,
+    isDenied: boolean,
+    isSafe: boolean,
+    allowUnsafeTools: boolean
+  ): string | undefined {
+    if (isDenied) return "Hidden by denylist policy.";
+    if (!isAllowed) return "Hidden because it is not on the allowlist.";
+    if (!isSafe && !allowUnsafeTools) {
+      return "Hidden because it can run code, modify files, or otherwise take unsafe actions.";
+    }
+    return undefined;
   }
 
   private isSafe(toolName: string): boolean {

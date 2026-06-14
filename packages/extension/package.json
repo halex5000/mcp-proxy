@@ -108,6 +108,12 @@
         "command": "managedConnections.resetConnectionState",
         "title": "Reset Connection State",
         "category": "Connections"
+      },
+      {
+        "command": "managedConnections.simulateConnectionMode",
+        "title": "Simulate Connection State",
+        "icon": "$(beaker)",
+        "category": "Connections"
       }
     ],
     "menus": {
@@ -138,6 +144,11 @@
           "command": "managedConnections.resetConnectionState",
           "when": "viewItem =~ /^connection-/",
           "group": "context@9"
+        },
+        {
+          "command": "managedConnections.simulateConnectionMode",
+          "when": "viewItem =~ /^connection-/",
+          "group": "context@8"
         }
       ]
     },
@@ -147,8 +158,8 @@
         "managedConnections.enabledConnections": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["github"],
-          "description": "Which connections to activate. Connections with 'unsafe' tools (e.g., browser automation with code execution) must be explicitly listed here.",
+          "default": ["github", "test-echo"],
+          "description": "Which connections to activate. The local Test Echo connection is enabled by default for smoke tests; connections with unsafe tools must be explicitly listed here.",
           "scope": "window"
         },
         "managedConnections.atlassian.baseUrl": {

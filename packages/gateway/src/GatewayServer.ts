@@ -1,9 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { McpProxy } from "./proxy/McpProxy.js";
-import type { ConnectionId } from "@mcp-proxy/shared";
+import type { ConnectionId, ConnectionStatusEntry } from "@mcp-proxy/shared";
 import type { HealthAggregator } from "./health/HealthAggregator.js";
 import type { Supervisor } from "./supervisor/Supervisor.js";
+
+type StatusProvider = () => ConnectionStatusEntry[];
+type RestartHandler = (id: ConnectionId) => Promise<unknown>;
 
 /**
  * GatewayServer builds the MCP server that VS Code connects to over the
@@ -24,6 +27,8 @@ export class GatewayServer {
   private proxies = new Map<ConnectionId, McpProxy>();
   private healthAggregator: HealthAggregator;
   private supervisor: Supervisor;
+  private statusProvider: StatusProvider | undefined;
+  private restartHandler: RestartHandler | undefined;
 
   constructor(healthAggregator: HealthAggregator, supervisor: Supervisor) {
     this.healthAggregator = healthAggregator;
@@ -36,6 +41,14 @@ export class GatewayServer {
 
   removeProxy(id: ConnectionId): void {
     this.proxies.delete(id);
+  }
+
+  setStatusProvider(provider: StatusProvider): void {
+    this.statusProvider = provider;
+  }
+
+  setRestartHandler(handler: RestartHandler): void {
+    this.restartHandler = handler;
   }
 
   /** Build a fresh McpServer configured with current tools. Called per session. */
@@ -92,6 +105,111 @@ export class GatewayServer {
    */
   private registerMetaTools(server: McpServer): void {
     server.tool(
+      "connections_status",
+      [
+        "Returns all connection statuses as structured JSON for assistant diagnostics.",
+        "Use this before explaining what capabilities are available or broken.",
+      ].join(" "),
+      {},
+      async () => this.jsonToolResult({ connections: this.currentStatuses() })
+    );
+
+    server.tool(
+      "connection_health",
+      [
+        "Returns health for one connection or all connections.",
+        "Use this when the user asks why a connection or tool is not working.",
+      ].join(" "),
+      {
+        connectionId: z.string().optional(),
+      },
+      async ({ connectionId }) => {
+        const statuses = this.currentStatuses();
+        const results = connectionId
+          ? statuses.filter((entry) => entry.id === connectionId)
+          : statuses;
+        return this.jsonToolResult({ connections: results });
+      }
+    );
+
+    server.tool(
+      "connection_diagnostics",
+      [
+        "Returns assistant-readable diagnostics for one connection or all connections.",
+        "Prefer assistantSummary and userMessage when explaining failures to users.",
+      ].join(" "),
+      {
+        connectionId: z.string().optional(),
+      },
+      async ({ connectionId }) => {
+        const statuses = this.currentStatuses();
+        const results = (connectionId
+          ? statuses.filter((entry) => entry.id === connectionId)
+          : statuses
+        ).map((entry) => ({
+          id: entry.id,
+          name: entry.name,
+          health: entry.health,
+          diagnostics: entry.health.diagnostics,
+        }));
+        return this.jsonToolResult({ connections: results });
+      }
+    );
+
+    server.tool(
+      "restart_connection",
+      [
+        "Restarts a managed connection when the health action includes restart.",
+        "Use this only when the user asks you to fix a restartable connection.",
+      ].join(" "),
+      {
+        connectionId: z.string(),
+      },
+      async ({ connectionId }) => {
+        if (!this.restartHandler) {
+          return this.jsonToolResult(
+            { ok: false, message: "Restart is not available." },
+            true
+          );
+        }
+
+        try {
+          const result = await this.restartHandler(connectionId);
+          return this.jsonToolResult({ ok: true, result });
+        } catch (err) {
+          return this.jsonToolResult({ ok: false, message: String(err) }, true);
+        }
+      }
+    );
+
+    server.tool(
+      "explain_connection_problem",
+      [
+        "Returns plain-language summaries of current connection problems.",
+        "Use this when the user asks what is wrong or what action they need to take.",
+      ].join(" "),
+      {
+        connectionId: z.string().optional(),
+      },
+      async ({ connectionId }) => {
+        const statuses = this.currentStatuses();
+        const entries = connectionId
+          ? statuses.filter((entry) => entry.id === connectionId)
+          : statuses;
+        return this.jsonToolResult({
+          explanations: entries.map((entry) => ({
+            id: entry.id,
+            name: entry.name,
+            state: entry.health.state,
+            userMessage: entry.health.userMessage,
+            assistantSummary: entry.health.assistantSummary,
+            availableActions: entry.health.availableActions,
+          })),
+        });
+      }
+    );
+
+    server.tool(
       "get_connection_health",
       [
         "Returns the current health and status of all managed connections.",
@@ -109,29 +227,21 @@ export class GatewayServer {
       },
       async ({ connectionId }) => {
         const results: Record<string, unknown> = {};
-
-        for (const [id, proc] of this.supervisor.getAllProcesses()) {
-          if (connectionId && id !== connectionId) continue;
-          const proxy = this.proxies.get(id);
-          const health = this.healthAggregator.compute(id, id, proc, proxy);
-          results[id] = {
-            status: health.status,
-            label: health.label,
-            message: health.message,
-            toolCount: health.toolCount,
-            actions: health.actions,
-            assistantSummary: health.diagnostics?.assistantSummary ?? health.message,
+        for (const entry of this.currentStatuses()) {
+          if (connectionId && entry.id !== connectionId) continue;
+          results[entry.id] = {
+            status: entry.health.status,
+            state: entry.health.state,
+            label: entry.health.label,
+            message: entry.health.message,
+            toolCount: entry.health.toolCount,
+            hiddenToolCount: entry.health.hiddenToolCount,
+            actions: entry.health.actions,
+            assistantSummary: entry.health.assistantSummary,
           };
         }
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(results, null, 2),
-            },
-          ],
-        };
+        return this.jsonToolResult(results);
       }
     );
 
@@ -157,15 +267,42 @@ export class GatewayServer {
           }
         }
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ toolCount: tools.length, tools }, null, 2),
-            },
-          ],
-        };
+        return this.jsonToolResult({ toolCount: tools.length, tools });
       }
     );
+  }
+
+  private currentStatuses(): ConnectionStatusEntry[] {
+    if (this.statusProvider) return this.statusProvider();
+
+    return [...this.supervisor.getAllProcesses()].map(([id, proc]) => {
+      const proxy = this.proxies.get(id);
+      return {
+        id,
+        name: id,
+        health: this.healthAggregator.compute(id, id, proc, proxy),
+        tools:
+          proxy?.tools.map((tool) => ({
+            name: tool.name,
+            publicName: tool.publicName,
+            description: tool.description ?? "",
+            isVisible: tool.isVisible,
+            isSafe: tool.isSafe,
+            hiddenReason: tool.hiddenReason,
+          })) ?? [],
+      };
+    });
+  }
+
+  private jsonToolResult(value: unknown, isError = false) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(value, null, 2),
+        },
+      ],
+      isError,
+    };
   }
 }

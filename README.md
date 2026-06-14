@@ -109,6 +109,10 @@ packages/
                     health/
                       HealthAggregator.ts  — derive ConnectionHealth from process + proxy state
 
+  fake-mcp-server/
+                  Deterministic downstream MCP fixture for tests and demos:
+                    index.ts       — echo/data/marker tools + controlled failure modes
+
   extension/      The VS Code extension:
                     extension.ts                     — activate(): wires everything together
                     connections/
@@ -157,10 +161,13 @@ Defined in `ConnectionRegistry.ts`. Adding a new connection here is the entire s
 
 | ID | Name | Kind | Safe by default |
 |---|---|---|---|
+| `test-echo` | Test Echo | local stdio | ✓ |
 | `local-knowledge` | Project Knowledge | local stdio | ✓ |
 | `github` | GitHub | remote HTTP | ✓ |
 | `atlassian` | Jira & Confluence | remote OAuth | ✓ |
 | `playwright` | Browser Automation | local stdio | ✗ (explicit enable required) |
+
+`test-echo` is enabled by default in development. It is the appliance-grade proof fixture: no network fetches, no external auth, deterministic tools, controlled crashes, and optional unsafe fixture tools that must be hidden by the gateway.
 
 ### Tool Safety
 
@@ -203,6 +210,28 @@ Connections marked `safeByDefault: false` (e.g. Playwright) require the user to 
 npm install
 npm run build
 ```
+
+### Proof ladder
+
+```bash
+npm run smoke
+npm test
+```
+
+`npm run smoke` boots the gateway, configures `test-echo`, verifies `/control/status`, initializes MCP over HTTP, lists tools, invokes echo, proves unsafe tool filtering, simulates a downstream crash, and recovers with Restart.
+
+`npm test` adds unit coverage for health state normalization and tool filtering.
+
+Manual proof docs:
+
+- [SMOKE_TEST.md](SMOKE_TEST.md)
+- [COPILOT_REALITY_TEST.md](COPILOT_REALITY_TEST.md)
+- [SLAY_TEST.md](SLAY_TEST.md)
+- [TOOL_FILTERING_TEST.md](TOOL_FILTERING_TEST.md)
+- [CHAOS_TEST.md](CHAOS_TEST.md)
+- [EXTENSION_UI_TEST.md](EXTENSION_UI_TEST.md)
+- [ASSISTANT_DIAGNOSTICS_TEST.md](ASSISTANT_DIAGNOSTICS_TEST.md)
+- [DEMO_SCRIPT.md](DEMO_SCRIPT.md)
 
 ### Type-check all packages
 ```bash

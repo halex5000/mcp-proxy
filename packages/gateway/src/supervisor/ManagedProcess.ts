@@ -4,6 +4,7 @@ import type { LogLine } from "@mcp-proxy/shared";
 
 const MAX_LOG_LINES = 200;
 const RESTART_BACKOFF_MS = [1000, 2000, 5000, 15000, 30000];
+const MAX_AUTO_RESTARTS = 3;
 
 export type ProcessState =
   | "idle"
@@ -42,6 +43,7 @@ export class ManagedProcess {
   private logs: LogLine[] = [];
   private crashCount = 0;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private _nextRetryAt?: number;
   private listeners = new Set<ProcessEventListener>();
   private startedAt?: number;
 
@@ -59,6 +61,14 @@ export class ManagedProcess {
 
   get crashes(): number {
     return this.crashCount;
+  }
+
+  get nextRetryAt(): number | undefined {
+    return this._nextRetryAt;
+  }
+
+  get autoRestart(): boolean {
+    return this.opts.autoRestart;
   }
 
   constructor(opts: ProcessOptions) {
@@ -151,6 +161,14 @@ export class ManagedProcess {
     await this.start();
   }
 
+  async reconfigure(opts: Omit<ProcessOptions, "id">): Promise<void> {
+    await this.stop();
+    this.opts = { id: this.id, ...opts };
+    this.crashCount = 0;
+    this.logs = [];
+    await this.start();
+  }
+
   /** The stdin stream for MCP protocol communication with VS Code. */
   get stdin() {
     return this.proc?.stdin ?? null;
@@ -171,9 +189,20 @@ export class ManagedProcess {
   }
 
   private scheduleRestart(): void {
+    if (this.crashCount >= MAX_AUTO_RESTARTS) {
+      this._nextRetryAt = undefined;
+      this.appendLog(
+        "stderr",
+        `auto-restart stopped after ${this.crashCount} crashes`
+      );
+      return;
+    }
+
     const backoffMs =
       RESTART_BACKOFF_MS[Math.min(this.crashCount - 1, RESTART_BACKOFF_MS.length - 1)];
+    this._nextRetryAt = Date.now() + backoffMs;
     this.restartTimer = setTimeout(() => {
+      this._nextRetryAt = undefined;
       this.start().catch((err) => {
         this.appendLog("stderr", `auto-restart failed: ${err}`);
       });
@@ -185,5 +214,6 @@ export class ManagedProcess {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
+    this._nextRetryAt = undefined;
   }
 }

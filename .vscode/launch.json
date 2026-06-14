@@ -10,7 +10,8 @@
       ],
       "outFiles": [
         "${workspaceFolder}/packages/extension/dist/**/*.js",
-        "${workspaceFolder}/packages/gateway/dist/**/*.js"
+        "${workspaceFolder}/packages/gateway/dist/**/*.js",
+        "${workspaceFolder}/packages/fake-mcp-server/dist/**/*.js"
       ],
       "preLaunchTask": "build-all",
       "sourceMaps": true,
@@ -28,7 +29,8 @@
       ],
       "outFiles": [
         "${workspaceFolder}/packages/extension/dist/**/*.js",
-        "${workspaceFolder}/packages/gateway/dist/**/*.js"
+        "${workspaceFolder}/packages/gateway/dist/**/*.js",
+        "${workspaceFolder}/packages/fake-mcp-server/dist/**/*.js"
       ],
       "sourceMaps": true
     },

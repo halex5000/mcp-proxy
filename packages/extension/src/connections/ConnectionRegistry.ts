@@ -14,6 +14,27 @@ import type { ConnectionDefinition } from "@mcp-proxy/shared";
  *   remote-oauth  — reserved for future remote endpoints requiring OAuth
  */
 export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
+  // ── Test Echo ──────────────────────────────────────────────────────────────
+  {
+    id: "test-echo",
+    name: "Test Echo",
+    description:
+      "Deterministic local test connection used to prove lifecycle, health, tool filtering, and Copilot visibility.",
+    kind: "local-stdio",
+    icon: "$(beaker)",
+    safeByDefault: true,
+    mode: "managed",
+    requiredConfig: [],
+    optionalConfig: [],
+    command: "node",
+    args: ["${fakeMcpServerEntrypoint}"],
+    installCheck: {
+      name: "Node.js",
+      checkCommand: "node --version",
+      minVersion: "18.0.0",
+    },
+  },
+
   // ── Local Knowledge ────────────────────────────────────────────────────────
   {
     id: "local-knowledge",
@@ -23,6 +44,7 @@ export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
     kind: "local-stdio",
     icon: "$(book)",
     safeByDefault: true,
+    mode: "managed",
     requiredConfig: [],
     optionalConfig: [
       {
@@ -67,6 +89,7 @@ export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
     kind: "remote-github",
     icon: "$(github)",
     safeByDefault: true,
+    mode: "external",
     requiredConfig: [],
     optionalConfig: [],
     // GitHub remote MCP is hosted by GitHub. The extension detects the user's
@@ -88,6 +111,7 @@ export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
     kind: "local-stdio",
     icon: "$(tasklist)",
     safeByDefault: true,
+    mode: "managed",
     requiredConfig: [
       {
         key: "ATLASSIAN_SITE_NAME",
@@ -132,6 +156,7 @@ export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
     kind: "local-stdio",
     icon: "$(browser)",
     safeByDefault: false,
+    mode: "managed",
     requiresExplicitEnable: true,
     requiredConfig: [],
     optionalConfig: [

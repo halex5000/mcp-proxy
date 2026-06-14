@@ -3,6 +3,7 @@
  */
 
 import type { ConnectionHealth } from "./health.js";
+import type { ConnectionMode } from "./health.js";
 
 export type ConnectionKind =
   | "local-stdio"    // Local process, MCP over stdio
@@ -76,6 +77,10 @@ export interface ConnectionDefinition {
   requiresExplicitEnable?: boolean;
   /** Safe to use by default without user opt-in. */
   safeByDefault: boolean;
+  /** Lifecycle ownership model shown in user-facing status and diagnostics. */
+  mode?: ConnectionMode;
+  /** Test/demo only: allow tools that normally match unsafe deny patterns. */
+  allowUnsafeTools?: boolean;
 }
 
 // Built-in connection definitions live in packages/extension/src/connections/ConnectionRegistry.ts
@@ -91,6 +96,7 @@ export interface ActiveConnectionConfig {
   enabled: boolean;
   settings: Record<string, string>;
   authToken?: string;            // Injected by extension after VS Code auth
+  autoRestart?: boolean;
   /**
    * When set, the gateway surfaces this health state instead of computing one
    * from process/proxy state. Used by the extension to communicate states it

@@ -5,7 +5,8 @@ import type { ConnectionTreeItem } from "../providers/ConnectionsTreeProvider.js
 import type { GatewayClient } from "../gateway/GatewayClient.js";
 import type { GatewayProcess } from "../gateway/GatewayProcess.js";
 import type { DiagnosticsPanel } from "../ui/DiagnosticsPanel.js";
-import type { ConnectionId } from "@mcp-proxy/shared";
+import type { ConnectionId, SimulationMode } from "@mcp-proxy/shared";
+import { SIMULATION_MODES } from "@mcp-proxy/shared";
 
 export function registerCommands(
   context: vscode.ExtensionContext,
@@ -161,6 +162,27 @@ export function registerCommands(
       }
     ),
 
+    vscode.commands.registerCommand(
+      "managedConnections.simulateConnectionMode",
+      async (item?: ConnectionTreeItem) => {
+        const id = item?.connectionId ?? (await pickConnection("Simulate which connection?"));
+        if (!id) return;
+        const picked = await vscode.window.showQuickPick(
+          SIMULATION_MODES.map((mode) => ({
+            label: mode,
+            description: simulationDescription(mode),
+          })),
+          { placeHolder: "Choose a simulation mode" }
+        );
+        if (!picked) return;
+
+        await withProgress(`Simulating ${picked.label} for ${id}...`, async () => {
+          await gatewayClient.simulate(id, picked.label as SimulationMode);
+          treeProvider.refresh();
+        });
+      }
+    ),
+
     vscode.commands.registerCommand("managedConnections.showGatewayOutput", () => {
       gatewayProcess.showOutput();
     })
@@ -192,4 +214,33 @@ async function withProgress(title: string, fn: () => Promise<void>): Promise<voi
     { location: vscode.ProgressLocation.Window, title },
     fn
   );
+}
+
+function simulationDescription(mode: SimulationMode): string {
+  switch (mode) {
+    case "ready":
+      return "Healthy fake downstream server";
+    case "slow_start":
+      return "Starts slowly, then becomes ready";
+    case "crash_on_start":
+      return "Process exits immediately";
+    case "crash_after_delay":
+      return "Process starts, then exits";
+    case "crash_during_tool_call":
+      return "Crashes when echo is invoked";
+    case "hang":
+      return "Process never answers MCP initialize";
+    case "bad_json":
+      return "Emits invalid JSON on stdout";
+    case "auth_required":
+      return "Shows friendly sign-in required state";
+    case "dependency_missing":
+      return "Shows setup needed state";
+    case "version_mismatch":
+      return "Shows update required state";
+    case "blocked_by_policy":
+      return "Shows admin blocked state";
+    case "unsafe_tools":
+      return "Exposes unsafe fixture tools downstream";
+  }
 }

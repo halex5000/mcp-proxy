@@ -24,6 +24,7 @@
 
 import type { ConnectionHealth, StructuredDiagnostics } from "./health.js";
 import type { ConnectionId, GatewayConfig } from "./types.js";
+import type { SimulationMode } from "./simulation.js";
 
 // ── Endpoint paths & auth ───────────────────────────────────────────────────
 
@@ -72,9 +73,22 @@ export interface ConnectionStatusEntry {
 
 export interface ToolEntry {
   name: string;
+  publicName?: string;
   description: string;
   isVisible: boolean;  // False = hidden by denylist or safe-mode policy
   isSafe: boolean;
+  hiddenReason?: string;
+}
+
+// ── Control API: GET /connections and GET /connections/:id/health ──────────
+
+export interface ConnectionsResponse {
+  connections: ConnectionStatusEntry[];
+}
+
+export interface ConnectionHealthResponse {
+  id: ConnectionId;
+  health: ConnectionHealth;
 }
 
 // ── Control API: POST /connections/:id/restart ──────────────────────────────
@@ -82,11 +96,38 @@ export interface ToolEntry {
 export interface RestartResponse {
   ok: boolean;
   message: string;
+  health?: ConnectionHealth;
+}
+
+// ── Control API: POST /connections/:id/simulate ────────────────────────────
+
+export interface SimulateRequest {
+  mode: SimulationMode;
+}
+
+export interface SimulateResponse {
+  ok: boolean;
+  connectionId: ConnectionId;
+  mode: SimulationMode;
+  message: string;
+  health?: ConnectionHealth;
 }
 
 // ── Control API: GET /connections/:id/diagnostics ──────────────────────────
 
 export type DiagnosticsResponse = StructuredDiagnostics;
+
+export interface GatewayDiagnosticsResponse {
+  version: string;
+  pid: number;
+  uptimeMs: number;
+  connections: Array<{
+    id: ConnectionId;
+    name: string;
+    health: ConnectionHealth;
+    diagnostics?: StructuredDiagnostics;
+  }>;
+}
 
 // ── Control API: POST /configure ────────────────────────────────────────────
 // Sent by extension when config changes (auth token refresh, settings update)
@@ -103,6 +144,10 @@ export interface ConfigureResponse {
 export interface LogsResponse {
   connectionId: ConnectionId;
   lines: LogLine[];
+}
+
+export interface GatewayLogsResponse {
+  lines: Array<LogLine & { connectionId: ConnectionId }>;
 }
 
 export interface LogLine {

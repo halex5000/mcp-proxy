@@ -4,11 +4,16 @@
   "workspaces": [
     "packages/shared",
     "packages/gateway",
+    "packages/fake-mcp-server",
     "packages/extension"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev": "npm run dev --workspaces --if-present",
+    "smoke": "npm run build && node --test tests/gateway.integration.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "test:unit": "npm run build && node --test tests/unit.test.mjs",
+    "test:integration": "npm run build && node --test tests/gateway.integration.test.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present"
   },

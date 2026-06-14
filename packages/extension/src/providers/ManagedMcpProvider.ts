@@ -68,7 +68,7 @@ export class ManagedMcpProvider implements vscode.McpServerDefinitionProvider {
     // Token is injected in resolveMcpServerDefinition; we return empty headers
     // here because provideMcpServerDefinitions must not prompt the user.
     const settings = vscode.workspace.getConfiguration("managedConnections");
-    const enabledIds: string[] = settings.get("enabledConnections") ?? ["github", "local-knowledge"];
+    const enabledIds: string[] = settings.get("enabledConnections") ?? ["github", "test-echo"];
     const githubDef = findConnection("github");
 
     if (githubDef && enabledIds.includes("github") && githubDef.baseUrl) {

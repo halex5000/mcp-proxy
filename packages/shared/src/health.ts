@@ -19,6 +19,14 @@ export type ConnectionHealthStatus =
   | "version_mismatch"   // MCP server version incompatible with host
   | "unsafe_disabled";   // Disabled because it executes arbitrary code (safe default)
 
+export type ConnectionState = ConnectionHealthStatus;
+
+export type ConnectionMode =
+  | "managed"
+  | "detected"
+  | "external"
+  | "disabled";
+
 export type HealthAction =
   | "sign-in"
   | "sign-out"
@@ -30,6 +38,14 @@ export type HealthAction =
   | "update-extension"
   | "enable"
   | "disable";
+
+export type ConnectionAction = HealthAction;
+
+export interface HiddenToolSummary {
+  name: string;
+  reason: string;
+  isSafe: boolean;
+}
 
 export interface StructuredDiagnostics {
   connectionId: string;
@@ -47,19 +63,30 @@ export interface StructuredDiagnostics {
 }
 
 export interface ConnectionHealth {
+  id: string;
+  mode: ConnectionMode;
+  state: ConnectionState;
   status: ConnectionHealthStatus;
   /** Short user-facing label, e.g. "Connected", "Needs sign-in", "Restarting" */
   label: string;
+  userMessage: string;
   /** One-sentence explanation for the user. */
   message: string;
+  assistantSummary: string;
+  technicalMessage?: string;
   /** Technical detail for diagnostics panel. */
   detail?: string;
+  lastCheckedAt: string;
   lastChecked: number;            // Unix ms
   startedAt?: number;             // Unix ms, when process last started
+  uptimeMs?: number;
+  restartCount: number;
   crashCount: number;
   nextRetryAt?: number;           // Unix ms, for auto-restart backoff
   toolCount: number;
   hiddenToolCount: number;
+  hiddenTools: HiddenToolSummary[];
+  availableActions: ConnectionAction[];
   /** What the user can do right now. Drives button rendering. */
   actions: HealthAction[];
   diagnostics?: StructuredDiagnostics;
@@ -94,17 +121,31 @@ export const HEALTH_MESSAGES: Record<ConnectionHealthStatus, string> = {
 };
 
 export function makeDefaultHealth(
-  status: ConnectionHealthStatus = "not_configured"
+  status: ConnectionHealthStatus = "not_configured",
+  id = "unknown",
+  mode: ConnectionMode = "managed"
 ): ConnectionHealth {
+  const now = Date.now();
+  const message = HEALTH_MESSAGES[status];
+  const actions = actionsForStatus(status);
   return {
+    id,
+    mode,
+    state: status,
     status,
     label: HEALTH_LABELS[status],
-    message: HEALTH_MESSAGES[status],
-    lastChecked: Date.now(),
+    userMessage: message,
+    message,
+    assistantSummary: message,
+    lastCheckedAt: new Date(now).toISOString(),
+    lastChecked: now,
+    restartCount: 0,
     crashCount: 0,
     toolCount: 0,
     hiddenToolCount: 0,
-    actions: actionsForStatus(status),
+    hiddenTools: [],
+    availableActions: actions,
+    actions,
   };
 }
 

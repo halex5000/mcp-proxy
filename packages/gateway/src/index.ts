@@ -44,17 +44,56 @@ async function main(): Promise<void> {
 
   const proxies = new Map<ConnectionId, McpProxy>();
   const authToken = process.env[AUTH_TOKEN_ENV];
+  let configuring = false;
+
+  gatewayServer.setStatusProvider(() => controlServer.getConnectionStatuses());
+  gatewayServer.setRestartHandler((id) => controlServer.restartConnection(id));
 
   supervisor.on("processEvent", (event) => {
     if (event.kind === "crashed") {
       healthAggregator.setOverride(event.connectionId, { status: "crashed" });
     } else if (event.kind === "started") {
       healthAggregator.clearOverride(event.connectionId);
+      if (configuring) return;
+      const proxy = proxies.get(event.connectionId);
+      if (proxy) {
+        reconnectProxy(event.connectionId, proxy).catch((err) => {
+          healthAggregator.setOverride(event.connectionId, {
+            status: "degraded",
+            message: "Connected, but some features may not be available.",
+            detail: String(err),
+          });
+          process.stderr.write(
+            `Failed to reconnect proxy for ${event.connectionId}: ${err}\n`
+          );
+        });
+      }
     }
   });
 
   controlServer.setOnConfigure(async (config: GatewayConfig) => {
-    await supervisor.configure(config.connections);
+    configuring = true;
+    try {
+      await supervisor.configure(config.connections);
+    } finally {
+      configuring = false;
+    }
+
+    const activeLocalIds = new Set(
+      config.connections
+        .filter((conn) => conn.enabled && conn.definition.kind === "local-stdio")
+        .map((conn) => conn.id)
+    );
+
+    for (const id of [...proxies.keys()]) {
+      if (!activeLocalIds.has(id)) {
+        const proxy = proxies.get(id);
+        await proxy?.disconnect();
+        proxies.delete(id);
+        controlServer.removeProxy(id);
+        gatewayServer.removeProxy(id);
+      }
+    }
 
     for (const connConfig of config.connections) {
       if (!connConfig.enabled) continue;
@@ -65,18 +104,26 @@ async function main(): Promise<void> {
 
       await waitForRunning(proc);
 
-      if (!proxies.has(connConfig.id)) {
-        const proxy = new McpProxy(connConfig.id, proc, connConfig.definition);
-        try {
-          await proxy.connect();
-          proxies.set(connConfig.id, proxy);
-          controlServer.updateProxy(connConfig.id, proxy);
-          gatewayServer.registerProxy(connConfig.id, proxy);
-        } catch (err) {
-          process.stderr.write(
-            `Failed to connect proxy for ${connConfig.id}: ${err}\n`
-          );
-        }
+      let proxy = proxies.get(connConfig.id);
+      if (!proxy) {
+        proxy = new McpProxy(connConfig.id, proc, connConfig.definition);
+        proxies.set(connConfig.id, proxy);
+        controlServer.updateProxy(connConfig.id, proxy);
+        gatewayServer.registerProxy(connConfig.id, proxy);
+      }
+
+      try {
+        await proxy.reconnect();
+        healthAggregator.clearOverride(connConfig.id);
+      } catch (err) {
+        healthAggregator.setOverride(connConfig.id, {
+          status: "degraded",
+          message: "Connected, but some features may not be available.",
+          detail: String(err),
+        });
+        process.stderr.write(
+          `Failed to connect proxy for ${connConfig.id}: ${err}\n`
+        );
       }
     }
   });
@@ -164,6 +211,11 @@ function waitForRunning(proc: ManagedProcess, timeoutMs = 10_000): Promise<void>
       }
     });
   });
+}
+
+async function reconnectProxy(id: ConnectionId, proxy: McpProxy): Promise<void> {
+  await proxy.reconnect();
+  process.stderr.write(`Reconnected proxy for ${id}\n`);
 }
 
 main().catch((err) => {

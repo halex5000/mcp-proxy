@@ -5,6 +5,9 @@ import { StreamMcpTransport } from "./StreamMcpTransport.js";
 import { ToolFilter, type FilteredTool, type RawTool } from "./ToolFilter.js";
 import type { ConnectionDefinition } from "@mcp-proxy/shared";
 
+const MCP_CONNECT_TIMEOUT_MS = 5_000;
+const MCP_TOOL_CALL_TIMEOUT_MS = 15_000;
+
 /**
  * McpProxy connects to an already-running downstream MCP server process.
  *
@@ -63,8 +66,18 @@ export class McpProxy {
       { capabilities: {} }
     );
 
-    await this.client.connect(transport);
-    await this.refreshTools();
+    try {
+      await withTimeout(
+        this.client.connect(transport),
+        MCP_CONNECT_TIMEOUT_MS,
+        `Timed out connecting to ${this.connectionId}`
+      );
+      await this.refreshTools();
+    } catch (err) {
+      this.client = null;
+      await transport.close();
+      throw err;
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -81,7 +94,11 @@ export class McpProxy {
 
   async refreshTools(): Promise<void> {
     if (!this.client) return;
-    const result = await this.client.listTools();
+    const result = await withTimeout(
+      this.client.listTools(),
+      MCP_CONNECT_TIMEOUT_MS,
+      `Timed out listing tools for ${this.connectionId}`
+    );
     const raw: RawTool[] = result.tools.map((t) => ({
       name: t.name,
       description: t.description,
@@ -108,9 +125,31 @@ export class McpProxy {
       );
     }
 
-    return await this.client.callTool({
-      name: tool.name,
-      arguments: args,
-    });
+    return await withTimeout(
+      this.client.callTool({
+        name: tool.name,
+        arguments: args,
+      }),
+      MCP_TOOL_CALL_TIMEOUT_MS,
+      `Timed out calling ${publicName}`
+    );
+  }
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

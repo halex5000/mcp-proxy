@@ -26,10 +26,11 @@ npm install
 npm run build
 ```
 
-You should see three clean build outputs:
+You should see four clean build outputs:
 ```
 > @mcp-proxy/shared@0.1.0 build  ✓
 > @mcp-proxy/gateway@0.1.0 build ✓
+> @mcp-proxy/fake-mcp-server@0.1.0 build ✓
 > managed-mcp-connections@0.1.0 build ✓
 ```
 
@@ -67,10 +68,11 @@ In the Extension Development Host window:
 1. Look for the **Connections icon** in the Activity Bar (left sidebar) — it looks like a plug/link icon.
 2. Click it to open the **Connections** panel.
 
-You should see all four connections listed:
+You should see all five connections listed:
 
 ```
 CONNECTIONS
+  ✓ Test Echo             Connected
   ⟳ Project Knowledge     Starting…
   ○ GitHub                Not set up
   ○ Jira & Confluence     Not set up
@@ -79,9 +81,35 @@ CONNECTIONS
 
 > If the panel doesn't appear, check **View → Open View → Connections**.
 
+## 5. Test: Proof Fixture — Test Echo
+
+**What it does:** Deterministic local MCP server used for smoke, Copilot, chaos, and tool-filtering tests.
+
+Expected state:
+
+```
+  ✓ Test Echo             Connected
+    3 tools available
+```
+
+Test it in Copilot Chat:
+
+```text
+Use the MCP echo test tool and tell me exactly what it returns.
+```
+
+Expected: Copilot calls `test-echo__echo` and reports a response containing `fake-mcp-server`.
+
+Run the automated proof:
+
+```bash
+npm run smoke
+npm test
+```
+
 ---
 
-## 5. Test: Phase 1 — Project Knowledge (Local MCP)
+## 6. Test: Phase 1 — Project Knowledge (Local MCP)
 
 **What it does:** Gives Copilot read access to your workspace files.
 
@@ -107,7 +135,7 @@ Copilot should list the actual files by calling the `local-knowledge__list_direc
 
 ---
 
-## 6. Test: Phase 2 — GitHub
+## 7. Test: Phase 2 — GitHub
 
 **What it does:** Issues, PRs, code search, repos via GitHub's remote MCP at `api.githubcopilot.com/mcp/`.
 
@@ -146,7 +174,7 @@ Show me the last 3 commits on the main branch
 
 ---
 
-## 7. Test: Phase 3 — Jira & Confluence
+## 8. Test: Phase 3 — Jira & Confluence
 
 **What it does:** Search tickets, create issues, read Confluence pages.
 
@@ -202,7 +230,7 @@ Temporarily change the check command in `ConnectionRegistry.ts` to something tha
 
 ---
 
-## 8. Test: Phase 4 — Browser Automation (Playwright)
+## 9. Test: Phase 4 — Browser Automation (Playwright)
 
 **What it does:** Browse websites, take screenshots, extract content.
 **Off by default** — requires explicit opt-in because it can execute JavaScript.
@@ -253,7 +281,7 @@ Copilot should not be able to call `browser_evaluate` (it's in the denylist). It
 
 ---
 
-## 9. Test: Meta-Tools (Copilot Self-Diagnosis)
+## 10. Test: Meta-Tools (Copilot Self-Diagnosis)
 
 This is the magic feature. Ask Copilot about connection health directly:
 
@@ -271,7 +299,7 @@ Copilot will call `get_connection_health` and `get_available_tools` (registered 
 
 ---
 
-## 10. Test: Advanced Diagnostics
+## 11. Test: Advanced Diagnostics
 
 Right-click any connection → **Open Diagnostics**.
 
@@ -286,7 +314,7 @@ This is the "advanced" view. Normal users shouldn't need it. It's for debugging 
 
 ---
 
-## 11. Gateway Standalone Smoke Test
+## 12. Gateway Standalone Smoke Test
 
 You can test the gateway independently without launching the full extension:
 
@@ -325,7 +353,7 @@ Expected output:
 
 ---
 
-## 12. Common Issues
+## 13. Common Issues
 
 | Problem | Likely cause | Fix |
 |---|---|---|
@@ -339,7 +367,7 @@ Expected output:
 
 ---
 
-## 13. Extension Output Channels
+## 14. Extension Output Channels
 
 Two output channels are available in the Extension Development Host:
 

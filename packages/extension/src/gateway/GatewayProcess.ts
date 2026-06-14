@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as path from "path";
+import * as fs from "fs";
 import * as crypto from "crypto";
 import { AUTH_TOKEN_ENV, parseGatewayReady } from "@mcp-proxy/shared";
 
@@ -150,8 +151,35 @@ export class GatewayProcess implements vscode.Disposable {
   }
 
   private resolveGatewayPath(): string {
-    // In production, the gateway binary is bundled at dist/gateway/index.js
-    // alongside the extension's dist/extension.js.
-    return path.join(this.extensionPath, "dist", "gateway", "index.js");
+    // The gateway entrypoint lives in a different place depending on how the
+    // extension is running:
+    //
+    //   • Production (packaged .vsix): the gateway is bundled with the extension
+    //     at dist/gateway-server/index.js.
+    //   • Development (Extension Development Host in this monorepo): the gateway
+    //     is a sibling workspace package at packages/gateway/dist/index.js.
+    //
+    // Note: dist/gateway/ is already used for the extension's OWN compiled
+    // GatewayProcess/GatewayClient, so the bundled gateway server must NOT be
+    // placed there — we use dist/gateway-server/ to avoid the collision.
+    const candidates = [
+      // Packaged / bundled gateway server
+      path.join(this.extensionPath, "dist", "gateway-server", "index.js"),
+      // Monorepo dev layout: packages/extension → packages/gateway
+      path.join(this.extensionPath, "..", "gateway", "dist", "index.js"),
+    ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    throw new Error(
+      "Could not locate the gateway entrypoint. Tried:\n" +
+        candidates.map((c) => `  - ${c}`).join("\n") +
+        "\n\nIf you are running from source, build the gateway first: " +
+        "`npm run build` from the repo root (this produces packages/gateway/dist/index.js)."
+    );
   }
 }

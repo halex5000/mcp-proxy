@@ -43,17 +43,30 @@ export class HealthAggregator {
   ): ConnectionHealth {
     if (config?.healthOverride) {
       const override = config.healthOverride;
-      const base = makeDefaultHealth(override.status);
+      const mode = this.modeForConfig(config);
+      const base = makeDefaultHealth(override.status, id, mode);
+      const message = override.message ?? HEALTH_MESSAGES[override.status];
       return {
         ...base,
         status: override.status,
+        state: override.status,
         label: HEALTH_LABELS[override.status],
-        message: override.message ?? HEALTH_MESSAGES[override.status],
+        userMessage: message,
+        message,
+        assistantSummary:
+          override.detail
+            ? `${message} Detail: ${override.detail}`
+            : message,
+        technicalMessage: override.detail,
         detail: override.detail,
-        lastChecked: Date.now(),
+        lastChecked: base.lastChecked,
+        lastCheckedAt: base.lastCheckedAt,
+        restartCount: 0,
         crashCount: 0,
         toolCount: 0,
         hiddenToolCount: 0,
+        hiddenTools: [],
+        availableActions: actionsForStatus(override.status),
         actions: actionsForStatus(override.status),
         diagnostics: {
           connectionId: id,
@@ -79,23 +92,50 @@ export class HealthAggregator {
     proxy: McpProxy | undefined
   ): ConnectionHealth {
     const status = this.deriveStatus(process, proxy);
-    const base = makeDefaultHealth(status);
+    const base = makeDefaultHealth(status, id);
 
     const recentLogs = process?.recentLogs ?? [];
     const lastError = this.findLastError(process);
     const toolCount = proxy?.tools.filter((t) => t.isVisible).length ?? 0;
     const hiddenToolCount = proxy?.tools.filter((t) => !t.isVisible).length ?? 0;
+    const hiddenTools =
+      proxy?.tools
+        .filter((t) => !t.isVisible)
+        .map((t) => ({
+          name: t.publicName,
+          reason: t.hiddenReason ?? "Hidden by safety policy.",
+          isSafe: t.isSafe,
+        })) ?? [];
+    const assistantSummary = this.buildAssistantSummary(
+      id,
+      name,
+      status,
+      lastError,
+      toolCount,
+      hiddenToolCount
+    );
+    const now = Date.now();
 
     const health: ConnectionHealth = {
       ...base,
       status,
+      state: status,
       label: HEALTH_LABELS[status],
+      userMessage: HEALTH_MESSAGES[status],
       message: HEALTH_MESSAGES[status],
-      lastChecked: Date.now(),
+      assistantSummary,
+      technicalMessage: lastError,
+      lastChecked: now,
+      lastCheckedAt: new Date(now).toISOString(),
       startedAt: process?.state === "running" ? Date.now() - (process.uptime ?? 0) : undefined,
+      uptimeMs: process?.uptime,
+      restartCount: process?.crashes ?? 0,
       crashCount: process?.crashes ?? 0,
+      nextRetryAt: process?.nextRetryAt,
       toolCount,
       hiddenToolCount,
+      hiddenTools,
+      availableActions: actionsForStatus(status),
       actions: actionsForStatus(status),
       diagnostics: {
         connectionId: id,
@@ -108,12 +148,32 @@ export class HealthAggregator {
         environment: {},
         toolCount,
         hiddenToolCount,
-        assistantSummary: this.buildAssistantSummary(id, name, status, lastError, toolCount),
+        assistantSummary,
       },
     };
 
     const override = this.overrides.get(id);
-    return override ? { ...health, ...override } : health;
+    if (!override) return health;
+
+    const overrideStatus = override.status ?? health.status;
+    const overrideMessage = override.message ?? HEALTH_MESSAGES[overrideStatus];
+    return {
+      ...health,
+      ...override,
+      status: overrideStatus,
+      state: overrideStatus,
+      label: HEALTH_LABELS[overrideStatus],
+      userMessage: overrideMessage,
+      message: overrideMessage,
+      assistantSummary:
+        override.detail
+          ? `${overrideMessage} Detail: ${override.detail}`
+          : overrideMessage,
+      technicalMessage: override.detail ?? health.technicalMessage,
+      detail: override.detail ?? health.detail,
+      availableActions: actionsForStatus(overrideStatus),
+      actions: actionsForStatus(overrideStatus),
+    };
   }
 
   private deriveStatus(
@@ -134,10 +194,17 @@ export class HealthAggregator {
       case "crashed":
         return "crashed";
       case "running":
-        if (!proxy?.isConnected) return "starting";
+        if (!proxy?.isConnected) {
+          return proc.uptime && proc.uptime > 5_000 ? "degraded" : "starting";
+        }
         if (proxy.tools.length === 0) return "degraded";
         return "ready";
     }
+  }
+
+  private modeForConfig(config: ActiveConnectionConfig): ConnectionHealth["mode"] {
+    if (!config.enabled) return "disabled";
+    return config.definition.mode ?? "managed";
   }
 
   private findLastError(proc: ManagedProcess | undefined): string | undefined {
@@ -158,7 +225,8 @@ export class HealthAggregator {
     name: string,
     status: ConnectionHealthStatus,
     lastError: string | undefined,
-    toolCount: number
+    toolCount: number,
+    hiddenToolCount: number
   ): string {
     const parts: string[] = [
       `Connection "${name}" (id: ${id}) is in state: ${status}.`,
@@ -167,6 +235,11 @@ export class HealthAggregator {
     switch (status) {
       case "ready":
         parts.push(`${toolCount} tools are available.`);
+        if (hiddenToolCount > 0) {
+          parts.push(
+            `${hiddenToolCount} advanced or unsafe tools are hidden by safety policy.`
+          );
+        }
         break;
       case "crashed":
         parts.push("The server process exited unexpectedly.");
@@ -197,6 +270,14 @@ export class HealthAggregator {
         break;
       case "degraded":
         parts.push(`Only ${toolCount} tools are working. Some features may be unavailable.`);
+        break;
+      case "unsafe_disabled":
+        parts.push(
+          "This connection is disabled by default because it can run code or control external systems. The user can enable it in Settings if they trust it."
+        );
+        break;
+      case "version_mismatch":
+        parts.push("The downstream server version is not compatible. The user should update the connection or extension.");
         break;
       default:
         break;
