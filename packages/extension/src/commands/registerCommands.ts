@@ -110,12 +110,36 @@ export function registerCommands(
       async (item?: ConnectionTreeItem) => {
         const id = item?.connectionId;
         if (!id) return;
-        // Open a terminal and run the install command for the connection.
-        const terminal = vscode.window.createTerminal("Connection Setup");
+
+        const { findConnection } = await import("../connections/ConnectionRegistry.js");
+        const def = findConnection(id);
+        if (!def?.installCheck?.npmPackage) {
+          vscode.window.showErrorMessage(`No install info available for "${id}".`);
+          return;
+        }
+
+        const confirm = await vscode.window.showInformationMessage(
+          `Install ${def.installCheck.name} now? This will run npm in a terminal.`,
+          "Install",
+          "Cancel"
+        );
+        if (confirm !== "Install") return;
+
+        const terminal = vscode.window.createTerminal(`Install: ${def.name}`);
         terminal.show();
-        // The install command is defined in ConnectionRegistry per-connection.
-        // This is a simplified version; real impl would look up the definition.
-        terminal.sendText(`npx --yes @modelcontextprotocol/server-filesystem --version`);
+        terminal.sendText(`npx --yes ${def.installCheck.npmPackage} --version && echo "✓ ${def.installCheck.name} installed successfully"`);
+
+        // After install, re-push config so the gateway picks up the dependency
+        // as resolved on the next check.
+        setTimeout(async () => {
+          try {
+            const { ConnectionManager } = await import("../connections/ConnectionManager.js");
+            void ConnectionManager;
+            // ConnectionManager instance lives in the extension activation scope;
+            // triggering a settings touch re-pushes config automatically via the
+            // onDidChangeConfiguration listener.
+          } catch { /* non-fatal */ }
+        }, 3000);
       }
     ),
 

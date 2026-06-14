@@ -2,6 +2,8 @@
  * Core domain types shared between the extension and the gateway process.
  */
 
+import type { ConnectionHealth } from "./health.js";
+
 export type ConnectionKind =
   | "local-stdio"    // Local process, MCP over stdio
   | "remote-http"    // Remote MCP endpoint over HTTP/SSE
@@ -89,4 +91,11 @@ export interface ActiveConnectionConfig {
   enabled: boolean;
   settings: Record<string, string>;
   authToken?: string;            // Injected by extension after VS Code auth
+  /**
+   * When set, the gateway surfaces this health state instead of computing one
+   * from process/proxy state. Used by the extension to communicate states it
+   * knows about but the gateway cannot observe (e.g. unsafe_disabled,
+   * dependency_missing, auth_required before the process even starts).
+   */
+  healthOverride?: Pick<ConnectionHealth, "status" | "message" | "detail">;
 }

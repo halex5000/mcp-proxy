@@ -7,7 +7,7 @@ import {
 } from "@mcp-proxy/shared";
 import type { ManagedProcess, ProcessState } from "../supervisor/ManagedProcess.js";
 import type { McpProxy } from "../proxy/McpProxy.js";
-import type { ConnectionId } from "@mcp-proxy/shared";
+import type { ConnectionId, ActiveConnectionConfig } from "@mcp-proxy/shared";
 
 /**
  * HealthAggregator builds ConnectionHealth snapshots by combining:
@@ -27,6 +27,49 @@ export class HealthAggregator {
 
   clearOverride(id: ConnectionId): void {
     this.overrides.delete(id);
+  }
+
+  /**
+   * Compute health from process + proxy state, then apply any override the
+   * extension set via the config (e.g. unsafe_disabled, dependency_missing).
+   * The override short-circuits process-derived state entirely.
+   */
+  computeWithConfig(
+    id: ConnectionId,
+    name: string,
+    config: ActiveConnectionConfig | undefined,
+    process: ManagedProcess | undefined,
+    proxy: McpProxy | undefined
+  ): ConnectionHealth {
+    if (config?.healthOverride) {
+      const override = config.healthOverride;
+      const base = makeDefaultHealth(override.status);
+      return {
+        ...base,
+        status: override.status,
+        label: HEALTH_LABELS[override.status],
+        message: override.message ?? HEALTH_MESSAGES[override.status],
+        detail: override.detail,
+        lastChecked: Date.now(),
+        crashCount: 0,
+        toolCount: 0,
+        hiddenToolCount: 0,
+        actions: actionsForStatus(override.status),
+        diagnostics: {
+          connectionId: id,
+          crashCount: 0,
+          recentLogs: [],
+          environment: {},
+          toolCount: 0,
+          hiddenToolCount: 0,
+          assistantSummary:
+            override.detail
+              ? `${override.message} Detail: ${override.detail}`
+              : (override.message ?? HEALTH_MESSAGES[override.status]),
+        },
+      };
+    }
+    return this.compute(id, name, process, proxy);
   }
 
   compute(

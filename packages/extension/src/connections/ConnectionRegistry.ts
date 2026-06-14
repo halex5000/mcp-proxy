@@ -1,17 +1,25 @@
 import type { ConnectionDefinition } from "@mcp-proxy/shared";
 
 /**
- * The canonical registry of all built-in connection definitions.
+ * Built-in connection definitions.
  *
- * Adding a new connection here is the entire surface for registering it —
- * the extension will pick it up automatically in the tree view, health monitor,
- * and MCP provider. Users never touch mcp.json.
+ * Adding a new connection here is the complete registration surface.
+ * The extension picks it up automatically in the tree view, health monitor,
+ * MCP provider, and command palette. Users never touch mcp.json.
+ *
+ * Connection kinds:
+ *   local-stdio   — gateway spawns a child process; MCP over stdio
+ *   remote-github — registered directly with VS Code as McpHttpServerDefinition;
+ *                   VS Code connects to GitHub's infrastructure; token from VS Code auth
+ *   remote-oauth  — reserved for future remote endpoints requiring OAuth
  */
 export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
+  // ── Local Knowledge ────────────────────────────────────────────────────────
   {
     id: "local-knowledge",
     name: "Project Knowledge",
-    description: "Gives Copilot access to your workspace files, notes, and local documentation.",
+    description:
+      "Gives Copilot read-only access to your workspace files and local documentation.",
     kind: "local-stdio",
     icon: "$(book)",
     safeByDefault: true,
@@ -20,7 +28,8 @@ export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
       {
         key: "knowledgePath",
         label: "Knowledge folder",
-        description: "Path to additional markdown or text files to index",
+        description:
+          "Path to additional markdown or text files to index (defaults to workspace root)",
         type: "path",
         required: false,
       },
@@ -32,20 +41,36 @@ export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
       checkCommand: "node --version",
       minVersion: "18.0.0",
     },
-    allowlist: ["read_file", "list_directory", "search_files", "get_file_info"],
-    denylist: ["write_file", "create_directory", "move_file", "delete_file"],
+    // Read-only: expose navigation tools, hide anything that writes
+    allowlist: [
+      "read_file",
+      "list_directory",
+      "search_files",
+      "get_file_info",
+      "list_allowed_directories",
+    ],
+    denylist: [
+      "write_file",
+      "create_directory",
+      "move_file",
+      "delete_file",
+      "edit_file",
+    ],
   },
+
+  // ── GitHub ─────────────────────────────────────────────────────────────────
   {
     id: "github",
     name: "GitHub",
-    description: "Issues, pull requests, code search, and repository management.",
+    description:
+      "Issues, pull requests, code search, and repository management via GitHub's remote MCP.",
     kind: "remote-github",
     icon: "$(github)",
     safeByDefault: true,
     requiredConfig: [],
     optionalConfig: [],
-    // GitHub remote MCP is served by GitHub's infrastructure.
-    // The extension detects the user's GitHub session and injects the token.
+    // GitHub remote MCP is hosted by GitHub. The extension detects the user's
+    // VS Code GitHub session and injects the token in resolveMcpServerDefinition.
     baseUrl: "https://api.githubcopilot.com/mcp/",
     oauthConfig: {
       provider: "github",
@@ -53,33 +78,57 @@ export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
       scopes: ["repo", "read:org", "read:user"],
     },
   },
+
+  // ── Atlassian ──────────────────────────────────────────────────────────────
   {
     id: "atlassian",
     name: "Jira & Confluence",
-    description: "Create issues, search docs, update tickets, and link Jira to your code.",
-    kind: "remote-oauth",
+    description:
+      "Create issues, search docs, update tickets, and link Jira to your code.",
+    kind: "local-stdio",
     icon: "$(tasklist)",
     safeByDefault: true,
     requiredConfig: [
       {
-        key: "baseUrl",
-        label: "Atlassian URL",
-        description: "Your Atlassian workspace URL, e.g. https://yourcompany.atlassian.net",
+        key: "ATLASSIAN_SITE_NAME",
+        label: "Atlassian site name",
+        description:
+          "Your Atlassian subdomain, e.g. for yourcompany.atlassian.net enter yourcompany",
         type: "string",
+        required: true,
+      },
+      {
+        key: "ATLASSIAN_USER_EMAIL",
+        label: "Email address",
+        description: "The email associated with your Atlassian account",
+        type: "string",
+        required: true,
+      },
+      {
+        key: "ATLASSIAN_API_TOKEN",
+        label: "API token",
+        description:
+          "Create one at id.atlassian.com → Security → API tokens",
+        type: "secret",
         required: true,
       },
     ],
     optionalConfig: [],
-    oauthConfig: {
-      provider: "atlassian",
-      scopes: ["read:jira-work", "write:jira-work", "read:confluence-content.all"],
-      tokenSettingKey: "managedConnections.atlassian.token",
+    command: "npx",
+    args: ["-y", "@atlassian/mcp-atlassian"],
+    installCheck: {
+      name: "@atlassian/mcp-atlassian",
+      checkCommand: "npx --yes @atlassian/mcp-atlassian --version",
+      npmPackage: "@atlassian/mcp-atlassian",
     },
   },
+
+  // ── Playwright ─────────────────────────────────────────────────────────────
   {
     id: "playwright",
     name: "Browser Automation",
-    description: "Browse the web, take screenshots, and fill forms. Disabled by default.",
+    description:
+      "Browse the web, take screenshots, fill forms, and extract page content. Disabled by default — can execute JavaScript.",
     kind: "local-stdio",
     icon: "$(browser)",
     safeByDefault: false,
@@ -87,9 +136,9 @@ export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
     requiredConfig: [],
     optionalConfig: [
       {
-        key: "safeMode",
-        label: "Safe mode",
-        description: "Restrict to read-only browsing (no form submission or script execution)",
+        key: "PLAYWRIGHT_HEADLESS",
+        label: "Headless browser",
+        description: "Run browser in headless mode (no visible window)",
         type: "boolean",
         required: false,
         default: true,
@@ -98,12 +147,24 @@ export const CONNECTION_REGISTRY: ConnectionDefinition[] = [
     command: "npx",
     args: ["-y", "@playwright/mcp@latest"],
     installCheck: {
-      name: "Node.js + Playwright MCP",
-      checkCommand: "npx @playwright/mcp --version",
+      name: "@playwright/mcp",
+      checkCommand: "npx --yes @playwright/mcp --version",
       npmPackage: "@playwright/mcp",
     },
-    // In safe mode, hide dangerous tools. The extension passes safeMode as env.
-    denylist: ["browser_execute_script", "browser_handle_dialog", "browser_type"],
+    // Safe mode: read/navigate only. JS execution, form submission, and
+    // dialog handling are hidden unless the user explicitly disables safe mode.
+    denylist: [
+      "browser_evaluate",
+      "browser_execute_script",
+      "browser_handle_dialog",
+      "browser_type",
+      "browser_fill",
+      "browser_select_option",
+      "browser_check",
+      "browser_uncheck",
+      "browser_upload_file",
+      "browser_press_key",
+    ],
   },
 ];
 

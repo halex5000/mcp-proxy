@@ -1,85 +1,117 @@
 import * as vscode from "vscode";
 import { authHeader } from "@mcp-proxy/shared";
 import type { GatewayProcess } from "../gateway/GatewayProcess.js";
+import type { ConnectionManager } from "../connections/ConnectionManager.js";
+import { findConnection } from "../connections/ConnectionRegistry.js";
+
+const GITHUB_SCOPES = ["repo", "read:org", "read:user"];
+
+// Stable label used to identify the GitHub definition across provide/resolve calls.
+const GITHUB_LABEL = "GitHub (Managed)";
+const GATEWAY_LABEL = "Managed Connections";
 
 /**
- * ManagedMcpProvider implements VS Code's McpServerDefinitionProvider API.
+ * ManagedMcpProvider registers ALL managed MCP endpoints with VS Code.
  *
- * It registers a SINGLE managed entry point: the gateway's /mcp HTTP endpoint.
- * Crucially this is an *HTTP* definition, not a stdio one. The difference is the
- * whole architecture:
+ * It returns multiple McpServerDefinitions per call:
  *
- *   - With McpStdioServerDefinition, VS Code spawns and owns the process. The
- *     extension would then be monitoring/restarting a DIFFERENT process than the
- *     one Copilot talks to (the extension spawns its own for the control API).
+ *   1. The local gateway (McpHttpServerDefinition, localhost)
+ *      Handles: local-knowledge, atlassian, playwright
+ *      Auth: per-session bearer token
  *
- *   - With McpHttpServerDefinition, VS Code is just an HTTP client. The extension
- *     spawns the one and only gateway process, owns its lifecycle, and points
- *     VS Code at its localhost /mcp endpoint. Health, restart, and diagnostics
- *     all act on the exact process Copilot uses.
+ *   2. GitHub remote MCP (McpHttpServerDefinition, api.githubcopilot.com)
+ *      Handles: GitHub issues, PRs, code search, repos
+ *      Auth: injected in resolveMcpServerDefinition via VS Code auth session
  *
- * Benefits this unlocks:
- *   - Downstream connection restarts happen inside the gateway; the /mcp endpoint
- *     stays up, so Copilot's MCP session is never torn down.
- *   - The bearer token (passed in headers) ensures only VS Code's registered
- *     client can reach /mcp.
- *   - A full gateway restart changes the port; we fire onDidChange so VS Code
- *     reconnects to the new URI.
+ * provideMcpServerDefinitions: called eagerly, no user interaction allowed.
+ *   Returns definitions with placeholder auth for remote servers.
+ *
+ * resolveMcpServerDefinition: called when VS Code is about to connect.
+ *   Injects real auth tokens. For GitHub, silently fetches the VS Code session.
+ *   For the gateway, no-op (auth is already baked into the definition).
  */
-export class ManagedMcpProvider
-  implements vscode.McpServerDefinitionProvider
-{
+export class ManagedMcpProvider implements vscode.McpServerDefinitionProvider {
   private gatewayProcess: GatewayProcess;
+  private connectionManager: ConnectionManager;
+
   private _onDidChangeMcpServerDefinitions = new vscode.EventEmitter<void>();
   readonly onDidChangeMcpServerDefinitions =
     this._onDidChangeMcpServerDefinitions.event;
 
-  constructor(gatewayProcess: GatewayProcess) {
+  constructor(gatewayProcess: GatewayProcess, connectionManager: ConnectionManager) {
     this.gatewayProcess = gatewayProcess;
+    this.connectionManager = connectionManager;
 
-    // On (re)start the port may change → tell VS Code to re-fetch definitions
-    // so it reconnects to the new localhost URI.
-    gatewayProcess.onReady(() => {
-      this._onDidChangeMcpServerDefinitions.fire();
-    });
-    gatewayProcess.onCrash(() => {
-      this._onDidChangeMcpServerDefinitions.fire();
-    });
+    gatewayProcess.onReady(() => this._onDidChangeMcpServerDefinitions.fire());
+    gatewayProcess.onCrash(() => this._onDidChangeMcpServerDefinitions.fire());
   }
 
-  /**
-   * Called eagerly by VS Code. Must NOT perform user interaction (auth etc.) —
-   * that belongs in resolveMcpServerDefinition. We only return the localhost
-   * endpoint of the already-running gateway.
-   */
   provideMcpServerDefinitions(
     _token: vscode.CancellationToken
   ): vscode.ProviderResult<vscode.McpServerDefinition[]> {
+    const definitions: vscode.McpServerDefinition[] = [];
+
+    // 1. Local gateway — always included when running
     const uri = this.gatewayProcess.mcpUri;
-    if (!this.gatewayProcess.isRunning || !uri) {
-      return [];
+    if (this.gatewayProcess.isRunning && uri) {
+      definitions.push(
+        new vscode.McpHttpServerDefinition(
+          GATEWAY_LABEL,
+          vscode.Uri.parse(uri),
+          authHeader(this.gatewayProcess.authToken),
+          "0.1.0"
+        )
+      );
     }
 
-    const definition = new vscode.McpHttpServerDefinition(
-      "Managed Connections",
-      vscode.Uri.parse(uri),
-      authHeader(this.gatewayProcess.authToken),
-      "0.1.0"
-    );
+    // 2. GitHub remote MCP — included when the connection is enabled.
+    // Token is injected in resolveMcpServerDefinition; we return empty headers
+    // here because provideMcpServerDefinitions must not prompt the user.
+    const settings = vscode.workspace.getConfiguration("managedConnections");
+    const enabledIds: string[] = settings.get("enabledConnections") ?? ["github", "local-knowledge"];
+    const githubDef = findConnection("github");
 
-    return [definition];
+    if (githubDef && enabledIds.includes("github") && githubDef.baseUrl) {
+      definitions.push(
+        new vscode.McpHttpServerDefinition(
+          GITHUB_LABEL,
+          vscode.Uri.parse(githubDef.baseUrl),
+          {}, // auth injected below
+          "1.0.0"
+        )
+      );
+    }
+
+    return definitions;
   }
 
   /**
-   * Called when VS Code is about to start/connect the server. This is where
-   * user-interactive work (auth) would go. For the local gateway there is
-   * nothing to resolve — downstream auth is handled by the extension pushing
-   * tokens over the control API — so we return the definition unchanged.
+   * Called by VS Code immediately before connecting to each server.
+   * Safe to perform auth here — VS Code shows a "Connecting…" indicator.
    */
-  resolveMcpServerDefinition(
+  async resolveMcpServerDefinition(
     server: vscode.McpServerDefinition,
     _token: vscode.CancellationToken
-  ): vscode.ProviderResult<vscode.McpServerDefinition> {
+  ): Promise<vscode.McpServerDefinition> {
+    if (!(server instanceof vscode.McpHttpServerDefinition)) {
+      return server;
+    }
+
+    // Inject GitHub token
+    if (server.label === GITHUB_LABEL) {
+      const token = await this.connectionManager.getGitHubToken();
+      if (token) {
+        return new vscode.McpHttpServerDefinition(
+          GITHUB_LABEL,
+          server.uri,
+          { Authorization: `Bearer ${token}` },
+          server.version
+        );
+      }
+      // No token — return as-is; VS Code will attempt to connect and fail,
+      // which surfaces as auth_required in the health view via RemoteHealthChecker.
+    }
+
     return server;
   }
 

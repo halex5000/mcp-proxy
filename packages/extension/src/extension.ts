@@ -1,18 +1,13 @@
 /**
  * Extension activation entry point.
  *
- * What happens here, in order:
- *   1. Spawn the gateway process (our local MCP supervisor)
- *   2. Wait for the gateway to announce its control port
- *   3. Register the gateway as a VS Code McpServerDefinitionProvider
- *      (VS Code/Copilot will connect to the gateway's MCP stdio interface)
- *   4. Push the initial connection configuration to the gateway
- *   5. Start the health monitor (polls the gateway control API every 5s)
- *   6. Register the Connections tree view
- *   7. Register all commands
- *
- * Users see: a "Connections" panel in the sidebar. Nothing else.
- * Copilot sees: a single MCP server (the gateway) with aggregated tools.
+ * Startup sequence:
+ *   1. Spawn the gateway process (single local MCP supervisor)
+ *   2. Register the gateway + GitHub remote MCP via McpHttpServerDefinition
+ *   3. Push initial connection configuration to the gateway
+ *   4. Start the health monitor (gateway + remote connections)
+ *   5. Register the Connections tree view
+ *   6. Register all commands
  */
 
 import * as vscode from "vscode";
@@ -36,41 +31,38 @@ export async function activate(
   try {
     gatewayPort = await gatewayProcess.start();
   } catch (err) {
-    vscode.window.showErrorMessage(
-      `Managed Connections failed to start: ${err}. Click "Show Output" to diagnose.`,
-      "Show Output"
-    ).then((choice) => {
-      if (choice === "Show Output") gatewayProcess.showOutput();
-    });
+    vscode.window
+      .showErrorMessage(
+        `Managed Connections failed to start: ${err}. Click "Show Output" to diagnose.`,
+        "Show Output"
+      )
+      .then((choice) => {
+        if (choice === "Show Output") gatewayProcess.showOutput();
+      });
     return;
   }
 
-  // ── 2. Control API client ─────────────────────────────────────────────────
+  // ── 2. Clients and managers ───────────────────────────────────────────────
   const gatewayClient = new GatewayClient(gatewayPort, gatewayProcess.authToken);
-
-  // ── 3. Register the gateway as an MCP server provider ────────────────────
-  //
-  // This is the critical registration: VS Code sees ONE MCP server (the gateway),
-  // not individual downstream servers. The gateway internally manages all connections.
-  //
-  const mcpProvider = new ManagedMcpProvider(gatewayProcess);
-  context.subscriptions.push(
-    vscode.lm.registerMcpServerDefinitionProvider(
-      "managed-connections",
-      mcpProvider
-    )
-  );
-
-  // ── 4. Connection manager — push initial config to gateway ────────────────
   const connectionManager = new ConnectionManager(gatewayClient, context);
   context.subscriptions.push(connectionManager);
 
+  // ── 3. Register MCP endpoints with VS Code ────────────────────────────────
+  //
+  // Returns two definitions:
+  //   - Local gateway (http://127.0.0.1:<port>/mcp) — local-knowledge, atlassian, playwright
+  //   - GitHub remote MCP (api.githubcopilot.com/mcp/) — GitHub tools
+  //
+  const mcpProvider = new ManagedMcpProvider(gatewayProcess, connectionManager);
+  context.subscriptions.push(
+    vscode.lm.registerMcpServerDefinitionProvider("managed-connections", mcpProvider)
+  );
+
+  // ── 4. Push initial config to gateway ────────────────────────────────────
   try {
     await connectionManager.pushConfig();
   } catch (err) {
-    // Non-fatal: gateway may not be fully initialized yet.
-    // The health monitor will retry and surface any issues.
-    console.warn("Initial config push failed:", err);
+    console.warn("Initial config push failed (gateway may still be initializing):", err);
   }
 
   // ── 5. Health monitor ─────────────────────────────────────────────────────
@@ -78,12 +70,11 @@ export async function activate(
   context.subscriptions.push(healthMonitor);
   healthMonitor.start();
 
-  // Show a status bar notification when a connection needs attention
-  healthMonitor.onHealthChanged(({ health }) => {
+  healthMonitor.onHealthChanged(({ id, health }) => {
     if (health.status === "crashed") {
       vscode.window
         .showWarningMessage(
-          `A connection crashed: ${health.message}`,
+          `Connection "${id}" crashed: ${health.message}`,
           "Restart",
           "Diagnostics"
         )
@@ -98,7 +89,7 @@ export async function activate(
     if (health.status === "auth_required") {
       vscode.window
         .showInformationMessage(
-          `A connection needs sign-in: ${health.message}`,
+          `"${id}" needs sign-in: ${health.message}`,
           "Sign In"
         )
         .then((choice) => {
@@ -113,17 +104,13 @@ export async function activate(
   const treeProvider = new ConnectionsTreeProvider(healthMonitor);
   const treeView = vscode.window.createTreeView(
     "managedConnections.connectionsView",
-    {
-      treeDataProvider: treeProvider,
-      showCollapseAll: false,
-    }
+    { treeDataProvider: treeProvider, showCollapseAll: false }
   );
   context.subscriptions.push(treeView);
 
-  // ── 7. Diagnostics panel ──────────────────────────────────────────────────
+  // ── 7. Diagnostics panel + commands ──────────────────────────────────────
   const diagnosticsPanel = new DiagnosticsPanel(gatewayClient);
 
-  // ── 8. Commands ───────────────────────────────────────────────────────────
   registerCommands(context, {
     treeProvider,
     connectionManager,
@@ -131,13 +118,8 @@ export async function activate(
     gatewayProcess,
     diagnosticsPanel,
   });
-
-  // ── Done. Show a subtle ready indicator. ──────────────────────────────────
-  // We deliberately avoid a notification toast here — ready state is the
-  // expected default. Only problems warrant user attention.
 }
 
 export function deactivate(): void {
-  // VS Code calls dispose() on all context.subscriptions automatically.
-  // The GatewayProcess.dispose() kills the gateway child process.
+  // VS Code disposes all context.subscriptions automatically.
 }
