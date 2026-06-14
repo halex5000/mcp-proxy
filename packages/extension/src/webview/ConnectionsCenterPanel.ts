@@ -3,16 +3,22 @@ import type { GatewayClient } from "../gateway/GatewayClient.js";
 import type { HealthMonitor } from "../health/HealthMonitor.js";
 import type { ConnectionManager } from "../connections/ConnectionManager.js";
 import { CONNECTION_REGISTRY } from "../connections/ConnectionRegistry.js";
-import type { SimulationMode } from "@mcp-proxy/shared";
+import type { ConnectionDefinition, ConnectionHealth, SimulationMode } from "@mcp-proxy/shared";
 
-type WebviewMessage =
-  | { type: "ready" }
-  | { type: "restart"; connectionId: string }
-  | { type: "simulate"; connectionId: string; mode: SimulationMode }
-  | { type: "copyDiagnostics"; connectionId: string }
-  | { type: "signIn"; connectionId: string }
-  | { type: "openSettings"; connectionId: string };
-
+/**
+ * ConnectionsCenterPanel renders the product-facing "Connections Center": a
+ * full editor-area webview that presents MCP connections as friendly capability
+ * cards rather than raw servers.
+ *
+ * Architecture boundary (do not cross): the webview owns UI only. It never talks
+ * to the gateway directly. Every action travels:
+ *
+ *   webview --postMessage--> ConnectionsCenterPanel --> GatewayClient/commands
+ *                                                    --> gateway /control/*
+ *
+ * The extension mediates because it owns the gateway bearer token, the port, and
+ * VS Code integration (auth sessions, settings, diagnostics panel).
+ */
 export class ConnectionsCenterPanel {
   static current: ConnectionsCenterPanel | undefined;
 
@@ -42,7 +48,7 @@ export class ConnectionsCenterPanel {
     );
 
     const instance = new ConnectionsCenterPanel(
-      panel, context, gatewayClient, healthMonitor, connectionManager
+      panel, gatewayClient, healthMonitor, connectionManager
     );
     ConnectionsCenterPanel.current = instance;
     return instance;
@@ -50,20 +56,21 @@ export class ConnectionsCenterPanel {
 
   private constructor(
     panel: vscode.WebviewPanel,
-    context: vscode.ExtensionContext,
     private readonly gatewayClient: GatewayClient,
     private readonly healthMonitor: HealthMonitor,
     private readonly connectionManager: ConnectionManager
   ) {
     this.panel = panel;
-    this.panel.webview.html = buildHtml(this.panel.webview, context.extensionUri);
+    this.panel.webview.html = buildHtml();
 
     this.disposables.push(
-      healthMonitor.onHealthChanged(() => this.pushState())
+      this.healthMonitor.onHealthChanged(() => {
+        void this.refresh();
+      })
     );
 
     this.disposables.push(
-      this.panel.webview.onDidReceiveMessage((msg: WebviewMessage) => {
+      this.panel.webview.onDidReceiveMessage((msg: InboundMessage) => {
         void this.handleMessage(msg);
       })
     );
@@ -74,86 +81,263 @@ export class ConnectionsCenterPanel {
     });
   }
 
-  private async handleMessage(msg: WebviewMessage): Promise<void> {
+  // ── Message bridge ──────────────────────────────────────────────────────────
+
+  private async handleMessage(msg: InboundMessage): Promise<void> {
     switch (msg.type) {
       case "ready":
-        this.pushState();
+      case "refresh":
+        await this.refresh();
+        break;
+
+      case "verifySetup":
+        await vscode.commands.executeCommand("managedConnections.verifyLocalSetup");
+        await this.refresh();
         break;
 
       case "restart":
-        try {
+        await this.run(`Restarting ${msg.connectionId}…`, async () => {
           await this.gatewayClient.restart(msg.connectionId);
-          this.pushState();
-          this.toast(`Restarted ${msg.connectionId}`, "info");
-        } catch (err) {
-          this.toast(String(err), "error");
-        }
+        }, `Restarted ${this.nameOf(msg.connectionId)}.`);
         break;
 
       case "simulate":
-        try {
+        await this.run(`Simulating ${msg.mode}…`, async () => {
           await this.gatewayClient.simulate(msg.connectionId, msg.mode);
-          this.pushState();
-        } catch (err) {
-          this.toast(String(err), "error");
-        }
+        });
+        break;
+
+      case "signIn":
+        await this.run(undefined, async () => {
+          await vscode.commands.executeCommand("managedConnections.signIn", {
+            connectionId: msg.connectionId,
+          });
+        });
+        break;
+
+      case "setup":
+        await this.handleSetup(msg.connectionId);
+        break;
+
+      case "enableSafeMode":
+        await this.run(undefined, async () => {
+          await vscode.commands.executeCommand("managedConnections.enableConnection", {
+            connectionId: msg.connectionId,
+          });
+        });
+        break;
+
+      case "openDiagnostics":
+        await vscode.commands.executeCommand("managedConnections.openDiagnostics", {
+          connectionId: msg.connectionId,
+          label: this.nameOf(msg.connectionId),
+        });
         break;
 
       case "copyDiagnostics":
         try {
           const diag = await this.gatewayClient.getDiagnostics(msg.connectionId);
           await vscode.env.clipboard.writeText(JSON.stringify(diag, null, 2));
-          this.toast("Diagnostics JSON copied to clipboard", "info");
+          this.toast(`Copied diagnostics for ${this.nameOf(msg.connectionId)}.`, "info");
         } catch (err) {
-          this.toast(String(err), "error");
+          this.toast(this.friendlyError(err), "error");
         }
         break;
 
-      case "signIn":
+      case "copyAllDiagnostics":
         try {
-          await this.connectionManager.signIn(msg.connectionId);
-          this.pushState();
+          const bundle = await this.buildDiagnosticsBundle();
+          await vscode.env.clipboard.writeText(JSON.stringify(bundle, null, 2));
+          this.toast("Copied full diagnostics bundle to clipboard.", "info");
         } catch (err) {
-          this.toast(String(err), "error");
+          this.toast(this.friendlyError(err), "error");
         }
-        break;
-
-      case "openSettings":
-        await vscode.commands.executeCommand(
-          "workbench.action.openSettings",
-          `managedConnections.${msg.connectionId}`
-        );
         break;
     }
   }
 
-  private pushState(): void {
+  /** "Set up" routes per connection: Atlassian uses its credential flow, others enable + open settings. */
+  private async handleSetup(connectionId: string): Promise<void> {
+    if (connectionId === "atlassian") {
+      await this.run(undefined, async () => {
+        await this.connectionManager.signIn("atlassian");
+      });
+      return;
+    }
+    await this.run(undefined, async () => {
+      await vscode.commands.executeCommand("managedConnections.enableConnection", {
+        connectionId,
+      });
+    });
+  }
+
+  private async run(
+    progressTitle: string | undefined,
+    action: () => Promise<void>,
+    successToast?: string
+  ): Promise<void> {
+    try {
+      if (progressTitle) {
+        await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Window, title: progressTitle },
+          action
+        );
+      } else {
+        await action();
+      }
+      if (successToast) this.toast(successToast, "info");
+    } catch (err) {
+      this.toast(this.friendlyError(err), "error");
+    } finally {
+      await this.refresh();
+    }
+  }
+
+  // ── State push ──────────────────────────────────────────────────────────────
+
+  private async refresh(): Promise<void> {
+    const connections = CONNECTION_REGISTRY.map((def) =>
+      this.presentConnection(def, this.healthMonitor.getHealth(def.id))
+    );
+    const gateway = await this.presentGateway();
+    this.post({ type: "stateUpdate", connections, gateway });
+  }
+
+  private presentConnection(def: ConnectionDefinition, health: ConnectionHealth | undefined) {
+    const status = health?.status ?? "not_configured";
+    const toolCount = health?.toolCount ?? 0;
+    const hiddenTools = (health?.hiddenTools ?? []).map((t) => ({
+      name: t.name,
+      reason: t.reason,
+      isSafe: t.isSafe,
+    }));
+    const friendly = FRIENDLY[def.id] ?? { icon: "🔌", description: def.description };
+
+    return {
+      id: def.id,
+      name: def.name,
+      icon: friendly.icon,
+      description: friendly.description,
+      status,
+      toolCount,
+      hiddenToolCount: health?.hiddenToolCount ?? 0,
+      // Plain-English summary — safe for normal users (never raw protocol text).
+      assistantSummary: health?.assistantSummary ?? "",
+      // Raw technical text — only shown inside Technical details disclosure.
+      technicalMessage: health?.technicalMessage ?? "",
+      hiddenTools,
+      recentLogs: health?.diagnostics?.recentLogs ?? [],
+      uptimeMs: health?.uptimeMs,
+      crashCount: health?.crashCount ?? 0,
+      isSimulatable: def.id === "test-echo",
+    };
+  }
+
+  private async presentGateway() {
+    try {
+      const status = await this.gatewayClient.getStatus();
+      const hiddenUnsafe = status.connections.flatMap((c) =>
+        (c.health.hiddenTools ?? [])
+          .filter((t) => !t.isSafe)
+          .map((t) => ({ connection: c.name, name: t.name, reason: t.reason }))
+      );
+      return {
+        available: true,
+        version: status.version,
+        pid: status.pid,
+        uptimeMs: status.uptimeMs,
+        port: this.gatewayClient.port,
+        connectionsJson: JSON.stringify(
+          status.connections.map((c) => ({ id: c.id, name: c.name, health: c.health })),
+          null,
+          2
+        ),
+        hiddenUnsafe,
+      };
+    } catch {
+      return { available: false, port: this.gatewayClient.port };
+    }
+  }
+
+  private async buildDiagnosticsBundle() {
+    const gateway = await this.presentGateway();
     const connections = CONNECTION_REGISTRY.map((def) => ({
       id: def.id,
       name: def.name,
-      description: def.description,
-      isSimulatable: def.id === "test-echo",
-      requiresExplicitEnable: def.requiresExplicitEnable ?? false,
       health: this.healthMonitor.getHealth(def.id) ?? null,
     }));
-    this.panel.webview.postMessage({ type: "stateUpdate", connections });
+    return { capturedAt: new Date().toISOString(), gateway, connections };
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  private nameOf(id: string): string {
+    return CONNECTION_REGISTRY.find((c) => c.id === id)?.name ?? id;
+  }
+
+  /** Keep raw protocol/process noise out of toasts; users only see friendly text. */
+  private friendlyError(err: unknown): string {
+    const text = String(err);
+    if (/ECONNREFUSED|fetch failed|returned 5\d\d/i.test(text)) {
+      return "The connection gateway isn't responding. Try Refresh, or Verify setup.";
+    }
+    return "Something went wrong. Open Advanced diagnostics for details.";
+  }
+
+  private post(msg: unknown): void {
+    void this.panel.webview.postMessage(msg);
   }
 
   private toast(message: string, kind: "info" | "error"): void {
-    this.panel.webview.postMessage({ type: "toast", message, kind });
+    this.post({ type: "toast", message, kind });
   }
 }
+
+type InboundMessage =
+  | { type: "ready" }
+  | { type: "refresh" }
+  | { type: "verifySetup" }
+  | { type: "restart"; connectionId: string }
+  | { type: "simulate"; connectionId: string; mode: SimulationMode }
+  | { type: "signIn"; connectionId: string }
+  | { type: "setup"; connectionId: string }
+  | { type: "enableSafeMode"; connectionId: string }
+  | { type: "openDiagnostics"; connectionId: string }
+  | { type: "copyDiagnostics"; connectionId: string }
+  | { type: "copyAllDiagnostics" };
+
+/** Friendly, capability-first copy for the dashboard (overrides registry blurbs). */
+const FRIENDLY: Record<string, { icon: string; description: string }> = {
+  "test-echo": {
+    icon: "🧪",
+    description: "A built-in test connection that proves the local gateway is working end to end.",
+  },
+  "local-knowledge": {
+    icon: "📚",
+    description: "Let the assistant recall and link your project's local files and docs.",
+  },
+  github: {
+    icon: "🐙",
+    description: "Work with repositories, issues, and pull requests in your GitHub projects.",
+  },
+  atlassian: {
+    icon: "🗂️",
+    description: "Search Confluence docs and create or update Jira issues from your editor.",
+  },
+  playwright: {
+    icon: "🌐",
+    description: "Safe browser automation for navigating and reading web pages.",
+  },
+};
 
 function getNonce(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let result = "";
-  for (let i = 0; i < 32; i++) {
-    result += chars[Math.floor(Math.random() * chars.length)];
-  }
+  for (let i = 0; i < 32; i++) result += chars[Math.floor(Math.random() * chars.length)];
   return result;
 }
 
-function buildHtml(_webview: vscode.Webview, _extensionUri: vscode.Uri): string {
+function buildHtml(): string {
   const nonce = getNonce();
   const csp = [
     "default-src 'none'",
@@ -164,644 +348,532 @@ function buildHtml(_webview: vscode.Webview, _extensionUri: vscode.Uri): string 
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="${csp}">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="${csp}" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Connections Center</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --radius: 10px;
+      --gap: 16px;
+      --border: var(--vscode-panel-border, var(--vscode-input-border, #3c3c3c));
+      --muted: var(--vscode-descriptionForeground, #8b949e);
+      --ok: var(--vscode-testing-iconPassed, #3fb950);
+      --warn: var(--vscode-editorWarning-foreground, #d29922);
+      --err: var(--vscode-testing-iconFailed, #f85149);
+      --info: var(--vscode-progressBar-background, #1f6feb);
+    }
 
+    *, *::before, *::after { box-sizing: border-box; }
     body {
+      margin: 0;
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      color: var(--vscode-foreground);
+      color: var(--vscode-editor-foreground);
       background: var(--vscode-editor-background);
-      padding: 24px 20px;
-      max-width: 860px;
+      line-height: 1.5;
     }
 
-    h1 {
-      font-size: 1.25em;
-      font-weight: 600;
-      margin-bottom: 4px;
-    }
+    .page { max-width: 960px; margin: 0 auto; padding: 32px 28px 64px; }
 
-    .subtitle {
-      color: var(--vscode-descriptionForeground);
-      font-size: 0.875em;
-      margin-bottom: 20px;
-    }
-
-    /* ── Summary bar ──────────────────────────────────────────────── */
-    .summary {
-      display: flex;
-      gap: 20px;
-      padding: 10px 14px;
-      background: var(--vscode-editor-inactiveSelectionBackground);
-      border-radius: 6px;
-      margin-bottom: 18px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-
-    .summary-item {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 0.875em;
-    }
-
-    .summary-count {
-      font-weight: 700;
-      font-size: 1.1em;
-      min-width: 1.4em;
-      text-align: center;
-    }
-
-    .summary-count.c-ready    { color: var(--vscode-testing-iconPassed, #4ec9b0); }
-    .summary-count.c-warn     { color: var(--vscode-editorWarning-foreground, #cca700); }
-    .summary-count.c-error    { color: var(--vscode-testing-iconFailed, #f14c4c); }
-    .summary-count.c-muted    { color: var(--vscode-disabledForeground); }
-
-    /* ── Needs-attention panel ────────────────────────────────────── */
-    .attention-panel {
-      border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
-      border-radius: 6px;
-      padding: 12px 16px;
-      margin-bottom: 20px;
-      background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.08));
-    }
-
-    .attention-panel h2 {
-      font-size: 0.9em;
-      font-weight: 600;
-      margin-bottom: 10px;
-    }
-
-    .attention-list {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .attention-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-
-    .attention-name { font-weight: 500; font-size: 0.9em; }
-    .attention-status { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
-
-    /* ── Section header ───────────────────────────────────────────── */
-    .section-header {
-      font-size: 0.75em;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.09em;
-      color: var(--vscode-descriptionForeground);
-      margin-bottom: 10px;
-    }
-
-    /* ── Cards ────────────────────────────────────────────────────── */
-    .cards { display: flex; flex-direction: column; gap: 10px; }
-
-    .card {
-      border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #454545));
-      border-radius: 8px;
-      padding: 14px 16px;
-      background: var(--vscode-editor-background);
-      transition: border-color 0.15s;
-    }
-
-    .card:focus-within {
-      border-color: var(--vscode-focusBorder);
-    }
-
-    .card-header {
+    /* ── Header ──────────────────────────────────────────────────── */
+    .header {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 6px;
+      gap: var(--gap);
+      flex-wrap: wrap;
+      margin-bottom: 24px;
     }
+    .header h1 { font-size: 1.65em; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+    .header .subtitle { color: var(--muted); margin: 0; font-size: 0.95em; }
+    .header-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
-    .card-title-group {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .card-icon { font-size: 1.15em; line-height: 1; flex-shrink: 0; }
-    .card-name { font-weight: 600; font-size: 1em; }
-
-    /* ── Status badge ─────────────────────────────────────────────── */
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      padding: 2px 9px;
-      border-radius: 12px;
-      font-size: 0.78em;
-      font-weight: 500;
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-
-    .status-dot {
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-
-    /* ready */
-    .s-ready .status-dot { background: var(--vscode-testing-iconPassed, #4ec9b0); }
-    .s-ready { background: rgba(78, 201, 176, 0.13); color: var(--vscode-testing-iconPassed, #4ec9b0); }
-
-    /* starting / stopping */
-    .s-starting .status-dot, .s-stopping .status-dot { background: var(--vscode-progressBar-background, #0e70c0); }
-    .s-starting, .s-stopping { background: rgba(14, 112, 192, 0.13); color: var(--vscode-progressBar-background, #0e70c0); }
-
-    /* crashed */
-    .s-crashed .status-dot { background: var(--vscode-testing-iconFailed, #f14c4c); }
-    .s-crashed { background: rgba(241, 76, 76, 0.13); color: var(--vscode-testing-iconFailed, #f14c4c); }
-
-    /* degraded / auth_required / dependency_missing / version_mismatch */
-    .s-degraded .status-dot,
-    .s-auth_required .status-dot,
-    .s-dependency_missing .status-dot,
-    .s-version_mismatch .status-dot { background: var(--vscode-editorWarning-foreground, #cca700); }
-    .s-degraded,
-    .s-auth_required,
-    .s-dependency_missing,
-    .s-version_mismatch { background: rgba(204, 167, 0, 0.13); color: var(--vscode-editorWarning-foreground, #cca700); }
-
-    /* not_configured / unsafe_disabled / blocked_by_policy */
-    .s-not_configured .status-dot,
-    .s-unsafe_disabled .status-dot,
-    .s-blocked_by_policy .status-dot { background: var(--vscode-disabledForeground, #888); }
-    .s-not_configured,
-    .s-unsafe_disabled,
-    .s-blocked_by_policy { background: rgba(136, 136, 136, 0.13); color: var(--vscode-disabledForeground, #888); }
-
-    /* ── Card body ────────────────────────────────────────────────── */
-    .card-description {
-      color: var(--vscode-descriptionForeground);
-      font-size: 0.875em;
-      line-height: 1.5;
-      margin-bottom: 10px;
-    }
-
-    .card-meta {
-      font-size: 0.82em;
-      color: var(--vscode-descriptionForeground);
-      margin-bottom: 10px;
-    }
-
-    /* ── Actions ──────────────────────────────────────────────────── */
-    .card-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; }
-
+    /* ── Buttons ─────────────────────────────────────────────────── */
     .btn {
+      font-family: inherit;
+      font-size: 0.85em;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      cursor: pointer;
       display: inline-flex;
       align-items: center;
-      gap: 4px;
-      padding: 4px 11px;
-      border-radius: 4px;
-      border: 1px solid transparent;
-      font-family: var(--vscode-font-family);
-      font-size: 0.82em;
-      cursor: pointer;
+      gap: 6px;
       white-space: nowrap;
     }
-
-    .btn:focus-visible {
-      outline: 2px solid var(--vscode-focusBorder);
-      outline-offset: 2px;
-    }
-
+    .btn:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
     .btn-primary {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
-      border-color: var(--vscode-button-background);
     }
-    .btn-primary:hover { background: var(--vscode-button-hoverBackground); }
-
+    .btn-primary:hover { background: var(--vscode-button-hoverBackground, var(--vscode-button-background)); }
     .btn-secondary {
       background: var(--vscode-button-secondaryBackground, transparent);
-      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-      border-color: var(--vscode-widget-border, #454545);
+      color: var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground));
+      border-color: var(--border);
     }
     .btn-secondary:hover { background: var(--vscode-list-hoverBackground); }
-
-    /* ── Diagnostics expander ─────────────────────────────────────── */
-    .diag-bar {
-      border-top: 1px solid var(--vscode-widget-border, #454545);
-      padding-top: 8px;
-      margin-top: 4px;
+    .btn-ghost {
+      background: transparent;
+      color: var(--vscode-textLink-foreground, var(--info));
+      padding: 6px 8px;
     }
+    .btn-ghost:hover { text-decoration: underline; }
 
-    .diag-toggle {
-      background: none;
-      border: none;
-      cursor: pointer;
-      color: var(--vscode-descriptionForeground);
-      font-family: var(--vscode-font-family);
-      font-size: 0.8em;
-      padding: 2px 0;
+    /* ── Summary strip ───────────────────────────────────────────── */
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .stat {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      background: var(--vscode-editor-background);
+    }
+    .stat .num { font-size: 1.8em; font-weight: 700; line-height: 1; }
+    .stat .lbl { color: var(--muted); font-size: 0.82em; margin-top: 6px; }
+    .stat.ready .num { color: var(--ok); }
+    .stat.attention .num { color: var(--warn); }
+    .stat.notset .num { color: var(--muted); }
+    .stat.disabled .num { color: var(--muted); }
+
+    /* ── Needs-attention banner ──────────────────────────────────── */
+    .attention-banner {
+      border: 1px solid var(--warn);
+      border-left-width: 4px;
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      margin-bottom: 24px;
+      background: color-mix(in srgb, var(--warn) 10%, transparent);
       display: flex;
       align-items: center;
-      gap: 5px;
-    }
-    .diag-toggle:hover { color: var(--vscode-foreground); }
-    .diag-toggle:focus-visible {
-      outline: 2px solid var(--vscode-focusBorder);
-      outline-offset: 2px;
-      border-radius: 2px;
-    }
-
-    .diag-chevron { font-size: 0.75em; transition: transform 0.15s; }
-    .diag-toggle[aria-expanded="true"] .diag-chevron { transform: rotate(90deg); }
-
-    .diag-content { display: none; margin-top: 10px; }
-    .diag-content.open { display: block; }
-
-    .diag-section { margin-bottom: 10px; }
-
-    .diag-label {
-      font-size: 0.75em;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--vscode-descriptionForeground);
-      margin-bottom: 3px;
-    }
-
-    .diag-value {
-      font-size: 0.82em;
-      font-family: var(--vscode-editor-font-family, monospace);
-      background: var(--vscode-textCodeBlock-background, var(--vscode-editor-inactiveSelectionBackground));
-      padding: 6px 9px;
-      border-radius: 4px;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    /* ── Simulate grid ────────────────────────────────────────────── */
-    .simulate-grid {
-      display: flex;
-      gap: 5px;
+      justify-content: space-between;
+      gap: var(--gap);
       flex-wrap: wrap;
-      margin-top: 6px;
+    }
+    .attention-banner .title { font-weight: 600; }
+    .attention-banner .detail { color: var(--muted); font-size: 0.9em; margin-top: 2px; }
+
+    /* ── Cards ───────────────────────────────────────────────────── */
+    .section-title {
+      font-size: 0.78em;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      font-weight: 600;
+      margin: 0 0 12px;
+    }
+    .cards { display: flex; flex-direction: column; gap: 12px; }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      background: var(--vscode-editor-background);
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+    .card:hover { border-color: var(--vscode-focusBorder); }
+    .card:focus-within { border-color: var(--vscode-focusBorder); }
+
+    .card-top { display: flex; align-items: flex-start; gap: 14px; }
+    .card-icon {
+      font-size: 1.5em;
+      line-height: 1;
+      width: 40px; height: 40px;
+      display: flex; align-items: center; justify-content: center;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      flex-shrink: 0;
+    }
+    .card-body { flex: 1; min-width: 0; }
+    .card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; flex-wrap: wrap;
+    }
+    .card-name { font-size: 1.05em; font-weight: 600; }
+    .card-desc { color: var(--muted); font-size: 0.9em; margin: 6px 0 0; }
+    .card-meta { font-size: 0.82em; color: var(--muted); margin-top: 6px; }
+    .card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+
+    /* ── Status badge (never color-only: glyph + text) ───────────── */
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 3px 10px; border-radius: 999px;
+      font-size: 0.78em; font-weight: 600;
+      border: 1px solid transparent;
+    }
+    .badge .glyph { font-size: 0.95em; }
+    .badge.ready { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+    .badge.attention { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+    .badge.progress { color: var(--info); border-color: color-mix(in srgb, var(--info) 45%, transparent); background: color-mix(in srgb, var(--info) 12%, transparent); }
+    .badge.notset, .badge.disabled { color: var(--muted); border-color: var(--border); background: var(--vscode-editor-background); }
+
+    /* ── Disclosure (native <details> for built-in a11y) ─────────── */
+    details { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+    summary {
+      cursor: pointer; font-size: 0.83em; color: var(--muted);
+      list-style: none; display: inline-flex; align-items: center; gap: 6px;
+      padding: 2px 4px; border-radius: 4px;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    summary::before { content: "▸"; display: inline-block; transition: transform 0.12s; }
+    details[open] > summary::before { transform: rotate(90deg); }
+    summary:hover { color: var(--vscode-editor-foreground); }
+
+    .diag-grid { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+    .diag-label {
+      font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--muted); font-weight: 600; margin-bottom: 4px;
+    }
+    pre.code {
+      margin: 0; padding: 10px 12px; border-radius: 6px;
+      background: var(--vscode-textCodeBlock-background, var(--vscode-editor-inactiveSelectionBackground));
+      font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+      font-size: 0.8em; white-space: pre-wrap; word-break: break-word;
+      max-height: 220px; overflow: auto;
+    }
+    .kv { font-size: 0.85em; }
+    .kv span { color: var(--muted); }
+
+    .sim-row { display: flex; align-items: center; gap: 8px; }
+    select {
+      font-family: inherit; font-size: 0.82em; padding: 5px 8px; border-radius: 6px;
+      background: var(--vscode-dropdown-background, var(--vscode-input-background));
+      color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+      border: 1px solid var(--vscode-dropdown-border, var(--border));
+    }
+    select:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+
+    /* ── Global advanced diagnostics ─────────────────────────────── */
+    .global-diag {
+      margin-top: 28px; border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 4px 18px 14px;
     }
 
-    /* ── Toast ────────────────────────────────────────────────────── */
+    /* ── Toasts ──────────────────────────────────────────────────── */
     #toasts {
-      position: fixed;
-      bottom: 16px;
-      right: 16px;
-      display: flex;
-      flex-direction: column-reverse;
-      gap: 8px;
-      z-index: 999;
-      pointer-events: none;
+      position: fixed; bottom: 18px; right: 18px;
+      display: flex; flex-direction: column-reverse; gap: 8px; z-index: 99;
     }
-
     .toast {
-      padding: 9px 14px;
-      border-radius: 5px;
-      font-size: 0.875em;
-      max-width: 320px;
-      pointer-events: auto;
-      animation: slideUp 0.2s ease;
+      padding: 10px 16px; border-radius: 8px; font-size: 0.86em; max-width: 360px;
+      color: #fff; box-shadow: 0 2px 10px rgba(0,0,0,0.3); animation: rise 0.18s ease;
+    }
+    .toast.info { background: var(--info); }
+    .toast.error { background: var(--err); }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    .loading { color: var(--muted); padding: 60px 0; text-align: center; }
+
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
     }
 
-    .toast-info  { background: var(--vscode-notificationsInfoIcon-foreground, #0e70c0); color: #fff; }
-    .toast-error { background: var(--vscode-notificationsErrorIcon-foreground, #f14c4c); color: #fff; }
-
-    @keyframes slideUp {
-      from { opacity: 0; transform: translateY(6px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-
-    /* ── Loading ──────────────────────────────────────────────────── */
-    .loading {
-      color: var(--vscode-descriptionForeground);
-      padding: 40px 0;
-      text-align: center;
-      font-size: 0.9em;
+    @media (max-width: 640px) {
+      .summary { grid-template-columns: repeat(2, 1fr); }
     }
   </style>
 </head>
 <body>
-  <h1>Connections</h1>
-  <p class="subtitle">GitHub Copilot tool connections managed by this extension</p>
+  <main class="page">
+    <div class="header">
+      <div>
+        <h1>Connections</h1>
+        <p class="subtitle">Manage what the assistant can access.</p>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-secondary" id="btn-refresh" aria-label="Refresh connections">↻ Refresh</button>
+        <button class="btn btn-secondary" id="btn-verify" aria-label="Verify local setup">✓ Verify setup</button>
+      </div>
+    </div>
 
-  <div id="root">
-    <div class="loading" aria-live="polite">Loading connections&hellip;</div>
-  </div>
+    <div id="root">
+      <div class="loading" aria-live="polite">Loading connections…</div>
+    </div>
+  </main>
 
   <div id="toasts" aria-live="polite" aria-atomic="false"></div>
 
   <script nonce="${nonce}">
   (function () {
-    'use strict';
-
+    "use strict";
     const vscode = acquireVsCodeApi();
     let connections = [];
+    let gateway = null;
+    let painted = false;
 
-    /* ── Static maps ──────────────────────────────────────────────── */
-    const STATUS_LABEL = {
-      ready:              'Ready',
-      starting:           'Starting',
-      stopping:           'Stopping',
-      crashed:            'Crashed',
-      degraded:           'Degraded',
-      auth_required:      'Sign in required',
-      dependency_missing: 'Missing tools',
-      not_configured:     'Not set up',
-      unsafe_disabled:    'Disabled',
-      blocked_by_policy:  'Blocked by policy',
-      version_mismatch:   'Version mismatch',
+    const STATUS = {
+      ready:              { label: "Connected",            kind: "ready",     glyph: "✓" },
+      starting:           { label: "Starting…",            kind: "progress",  glyph: "↻" },
+      stopping:           { label: "Stopping…",            kind: "progress",  glyph: "↻" },
+      crashed:            { label: "Stopped unexpectedly", kind: "attention", glyph: "!" },
+      degraded:           { label: "Partly working",       kind: "attention", glyph: "!" },
+      auth_required:      { label: "Needs sign-in",        kind: "attention", glyph: "🔑" },
+      dependency_missing: { label: "Setup needed",         kind: "attention", glyph: "!" },
+      version_mismatch:   { label: "Update required",      kind: "attention", glyph: "!" },
+      not_configured:     { label: "Not set up",           kind: "notset",    glyph: "○" },
+      unsafe_disabled:    { label: "Disabled",             kind: "disabled",  glyph: "⊘" },
+      blocked_by_policy:  { label: "Blocked by policy",    kind: "disabled",  glyph: "⊘" },
     };
 
-    const CONNECTION_ICON = {
-      'test-echo':       '⚗',
-      'local-knowledge': '📖',
-      'github':          '⬡',
-      'atlassian':       '☷',
-      'playwright':      '🌐',
-    };
-
-    const SIMULATION_MODES = [
-      'ready', 'slow_start', 'crash_on_start', 'crash_after_delay',
-      'hang', 'bad_json', 'auth_required', 'dependency_missing',
-      'version_mismatch', 'unsafe_tools', 'crash_during_tool_call',
+    const SIM_MODES = [
+      "ready","slow_start","crash_on_start","crash_after_delay","hang","bad_json",
+      "auth_required","dependency_missing","version_mismatch","unsafe_tools","crash_during_tool_call",
     ];
 
-    /* ── Helpers ──────────────────────────────────────────────────── */
-    function needsAttention(status) {
-      return ['crashed', 'degraded', 'auth_required', 'dependency_missing', 'version_mismatch'].includes(status);
-    }
-
-    function isReady(status) { return status === 'ready'; }
-
-    function isDisabledLike(status) {
-      return ['not_configured', 'unsafe_disabled', 'blocked_by_policy'].includes(status);
-    }
-
     function esc(v) {
-      return String(v ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+      return String(v == null ? "" : v)
+        .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+        .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+    }
+    function send(msg) { vscode.postMessage(msg); }
+    function meta(s) { return STATUS[s] || STATUS.not_configured; }
+
+    /* ── Resilient first paint: re-ping until the extension answers ── */
+    let pings = 0;
+    function ping() {
+      if (painted || pings >= 8) return;
+      pings++;
+      send({ type: "ready" });
+      setTimeout(ping, 400);
     }
 
-    function send(msg) { vscode.postMessage(msg); }
-
-    /* ── Message bus ──────────────────────────────────────────────── */
-    window.addEventListener('message', function (event) {
-      const msg = event.data;
-      if (msg.type === 'stateUpdate') {
-        connections = msg.connections || [];
+    window.addEventListener("message", function (e) {
+      const m = e.data;
+      if (m.type === "stateUpdate") {
+        connections = m.connections || [];
+        gateway = m.gateway || null;
+        painted = true;
         render();
-      } else if (msg.type === 'toast') {
-        showToast(msg.message, msg.kind || 'info');
+      } else if (m.type === "toast") {
+        toast(m.message, m.kind || "info");
       }
     });
 
-    send({ type: 'ready' });
+    document.getElementById("btn-refresh").addEventListener("click", function () { send({ type: "refresh" }); });
+    document.getElementById("btn-verify").addEventListener("click", function () { send({ type: "verifySetup" }); });
 
-    /* ── Render ───────────────────────────────────────────────────── */
+    ping();
+
+    /* ── Render ──────────────────────────────────────────────────── */
     function render() {
-      const readyCount   = connections.filter(c => isReady(c.health?.status)).length;
-      const attentionAll = connections.filter(c => c.health && needsAttention(c.health.status));
-      const disabledCount = connections.filter(c => !c.health || isDisabledLike(c.health?.status)).length;
-
-      let html = '';
-
-      /* Summary bar */
-      html += '<div class="summary" role="status" aria-label="Connections summary">';
-      html += '<div class="summary-item"><span class="summary-count c-ready">' + readyCount + '</span><span>ready</span></div>';
-      if (attentionAll.length > 0) {
-        html += '<div class="summary-item"><span class="summary-count c-warn">' + attentionAll.length + '</span><span>need' + (attentionAll.length === 1 ? 's' : '') + ' attention</span></div>';
-      }
-      if (disabledCount > 0) {
-        html += '<div class="summary-item"><span class="summary-count c-muted">' + disabledCount + '</span><span>disabled / not set up</span></div>';
-      }
-      html += '</div>';
-
-      /* Attention panel */
-      if (attentionAll.length > 0) {
-        html += '<div class="attention-panel" role="region" aria-label="Connections needing attention">';
-        html += '<h2>&#9888; Needs attention</h2>';
-        html += '<ul class="attention-list">';
-        for (const c of attentionAll) {
-          const status = c.health?.status ?? 'not_configured';
-          html += '<li class="attention-item">';
-          html += '<div><span class="attention-name">' + esc(c.name) + '</span>';
-          html += '<span class="attention-status"> &mdash; ' + esc(STATUS_LABEL[status] || status) + '</span></div>';
-          html += '<div>' + primaryBtn(c) + '</div>';
-          html += '</li>';
-        }
-        html += '</ul></div>';
-      }
-
-      /* Cards section */
-      html += '<div class="section-header">All connections</div>';
-      html += '<div class="cards" role="list">';
+      const counts = { ready: 0, attention: 0, notset: 0, disabled: 0 };
+      const attention = [];
       for (const c of connections) {
-        html += renderCard(c);
+        const k = meta(c.status).kind;
+        if (k === "ready") counts.ready++;
+        else if (k === "attention") { counts.attention++; attention.push(c); }
+        else if (k === "notset") counts.notset++;
+        else if (k === "disabled") counts.disabled++;
       }
-      html += '</div>';
 
-      document.getElementById('root').innerHTML = html;
-      attachListeners();
+      let h = "";
+
+      /* Summary strip */
+      h += '<div class="summary">';
+      h += stat("ready", counts.ready, "Ready");
+      h += stat("attention", counts.attention, counts.attention === 1 ? "Needs attention" : "Need attention");
+      h += stat("notset", counts.notset, "Not set up");
+      h += stat("disabled", counts.disabled, "Disabled");
+      h += "</div>";
+
+      /* Needs-attention banner */
+      if (attention.length > 0) {
+        const first = attention[0];
+        const more = attention.length > 1 ? (" (+" + (attention.length - 1) + " more)") : "";
+        h += '<div class="attention-banner" role="region" aria-label="Connections needing attention">';
+        h += '<div><div class="title">' + attention.length + " connection" + (attention.length === 1 ? "" : "s") + " need" + (attention.length === 1 ? "s" : "") + " attention</div>";
+        h += '<div class="detail">' + esc(first.name) + " — " + esc(meta(first.status).label) + "." + esc(more) + "</div></div>";
+        h += '<button class="btn btn-primary" data-fix="' + esc(first.id) + '">Fix now</button>';
+        h += "</div>";
+      }
+
+      /* Cards */
+      h += '<p class="section-title">Capabilities</p><div class="cards">';
+      for (const c of connections) h += card(c);
+      h += "</div>";
+
+      /* Global advanced diagnostics */
+      h += globalDiag();
+
+      document.getElementById("root").innerHTML = h;
+      wire();
     }
 
-    /* ── Card HTML ────────────────────────────────────────────────── */
-    function renderCard(conn) {
-      const h      = conn.health;
-      const status = h?.status ?? 'not_configured';
-      const label  = STATUS_LABEL[status] || status;
-      const icon   = CONNECTION_ICON[conn.id] || '⬡';
-      const tools  = h?.toolCount ?? 0;
-      const hidden = h?.hiddenToolCount ?? 0;
+    function stat(kind, num, label) {
+      return '<div class="stat ' + kind + '"><div class="num">' + num + '</div><div class="lbl">' + label + "</div></div>";
+    }
 
-      let out = '';
-      out += '<div class="card" role="listitem" id="card-' + esc(conn.id) + '">';
+    function card(c) {
+      const m = meta(c.status);
+      let o = '<section class="card" aria-label="' + esc(c.name) + ", " + esc(m.label) + '">';
+      o += '<div class="card-top">';
+      o += '<div class="card-icon" aria-hidden="true">' + esc(c.icon) + "</div>";
+      o += '<div class="card-body">';
 
-      /* Header row */
-      out += '<div class="card-header">';
-      out += '<div class="card-title-group">';
-      out += '<span class="card-icon" aria-hidden="true">' + icon + '</span>';
-      out += '<span class="card-name">' + esc(conn.name) + '</span>';
-      out += '</div>';
-      out += '<span class="status-badge s-' + esc(status) + '" role="status" aria-label="Status: ' + esc(label) + '">';
-      out += '<span class="status-dot" aria-hidden="true"></span>' + esc(label);
-      out += '</span>';
-      out += '</div>';
+      o += '<div class="card-head">';
+      o += '<span class="card-name">' + esc(c.name) + "</span>";
+      o += '<span class="badge ' + m.kind + '" role="status"><span class="glyph" aria-hidden="true">' + esc(m.glyph) + "</span>" + esc(m.label) + "</span>";
+      o += "</div>";
 
-      /* Description */
-      out += '<p class="card-description">' + esc(conn.description) + '</p>';
+      o += '<p class="card-desc">' + esc(c.description) + "</p>";
 
-      /* Tool count meta (only when ready) */
-      if (status === 'ready') {
-        let meta = tools + ' tool' + (tools !== 1 ? 's' : '') + ' available';
-        if (hidden > 0) meta += ' &bull; ' + hidden + ' hidden by safety policy';
-        out += '<div class="card-meta">' + meta + '</div>';
+      if (c.status === "ready" && c.toolCount > 0) {
+        let mt = c.toolCount + " tool" + (c.toolCount === 1 ? "" : "s") + " available";
+        if (c.hiddenToolCount > 0) mt += " · " + c.hiddenToolCount + " hidden for safety";
+        o += '<div class="card-meta">' + mt + "</div>";
       }
 
-      /* Action buttons */
-      const actions = cardActions(conn);
-      if (actions.length) {
-        out += '<div class="card-actions">' + actions.join('') + '</div>';
-      }
+      /* Actions */
+      o += '<div class="card-actions">' + actions(c).join("") + "</div>";
 
-      /* Diagnostics expander */
-      out += '<div class="diag-bar">';
-      out += '<button class="diag-toggle" data-conn="' + esc(conn.id) + '" aria-expanded="false" aria-controls="diag-' + esc(conn.id) + '">';
-      out += '<span class="diag-chevron" aria-hidden="true">&#9658;</span> Advanced diagnostics';
-      out += '</button>';
-      out += '<div class="diag-content" id="diag-' + esc(conn.id) + '" role="region" aria-label="Diagnostics for ' + esc(conn.name) + '">';
-
-      /* Diagnostics body */
-      if (h?.assistantSummary) {
-        out += diag('Summary', h.assistantSummary);
+      /* Per-card technical details disclosure */
+      o += '<details><summary>Technical details</summary><div class="diag-grid">';
+      if (c.assistantSummary) o += diagBlock("Summary", c.assistantSummary, false);
+      o += '<div class="kv"><span>Status:</span> ' + esc(c.status) +
+           ' &nbsp; <span>Tools:</span> ' + c.toolCount + (c.hiddenToolCount ? " (" + c.hiddenToolCount + " hidden)" : "") +
+           ' &nbsp; <span>Uptime:</span> ' + (c.uptimeMs != null ? Math.round(c.uptimeMs / 1000) + "s" : "n/a") +
+           ' &nbsp; <span>Crashes:</span> ' + (c.crashCount || 0) + "</div>";
+      if (c.technicalMessage) o += diagBlock("Last error", c.technicalMessage, true);
+      if (c.hiddenTools && c.hiddenTools.length) {
+        o += diagBlock("Hidden tools", c.hiddenTools.map(function (t) { return "• " + t.name + " — " + t.reason; }).join("\\n"), true);
       }
-      if (h?.technicalMessage) {
-        out += diag('Last error', h.technicalMessage);
+      if (c.recentLogs && c.recentLogs.length) {
+        o += diagBlock("Recent logs", c.recentLogs.slice(0, 20).join("\\n"), true);
       }
-      if (h) {
-        const detail = 'Status:  ' + status +
-          '\nTools:   ' + tools + (hidden ? ' (' + hidden + ' hidden)' : '') +
-          '\nUptime:  ' + (h.uptimeMs != null ? Math.round(h.uptimeMs / 1000) + 's' : 'n/a') +
-          '\nCrashes: ' + (h.crashCount ?? 0);
-        out += diag('Details', detail);
+      o += '<div class="card-actions" style="margin-top:4px">';
+      o += '<button class="btn btn-secondary" data-act="openDiagnostics" data-id="' + esc(c.id) + '">Open full diagnostics</button>';
+      o += '<button class="btn btn-secondary" data-act="copyDiagnostics" data-id="' + esc(c.id) + '">Copy diagnostics JSON</button>';
+      o += "</div>";
+      o += "</div></details>";
+
+      o += "</div></div></section>";
+      return o;
+    }
+
+    function actions(c) {
+      const id = esc(c.id);
+      const out = [];
+      switch (c.status) {
+        case "ready":
+          out.push(btn("secondary", "restart", id, "↻ Restart"));
+          if (c.isSimulatable) out.push(simControl(id));
+          break;
+        case "crashed":
+        case "degraded":
+          out.push(btn("primary", "restart", id, "↻ Restart"));
+          break;
+        case "auth_required":
+          out.push(btn("primary", "signIn", id, "🔑 Sign in"));
+          break;
+        case "not_configured":
+          out.push(btn("primary", "setup", id, "Set up"));
+          break;
+        case "dependency_missing":
+          out.push(btn("primary", "setup", id, "↓ Install tools"));
+          break;
+        case "unsafe_disabled":
+          out.push(btn("primary", "enableSafeMode", id, "Enable safe mode"));
+          break;
+        default:
+          break;
       }
-
-      /* Simulation controls (test-echo only) */
-      if (conn.isSimulatable) {
-        out += '<div class="diag-section">';
-        out += '<div class="diag-label">Simulate failure mode</div>';
-        out += '<div class="simulate-grid">';
-        for (const mode of SIMULATION_MODES) {
-          out += '<button class="btn btn-secondary" data-action="simulate" data-conn="' + esc(conn.id) + '" data-mode="' + esc(mode) + '">' + esc(mode) + '</button>';
-        }
-        out += '</div></div>';
-      }
-
-      /* Copy diagnostics */
-      out += '<div class="diag-section">';
-      out += '<button class="btn btn-secondary" data-action="copyDiagnostics" data-conn="' + esc(conn.id) + '">Copy diagnostics JSON</button>';
-      out += '</div>';
-
-      out += '</div></div>'; /* diag-content + diag-bar */
-      out += '</div>';       /* card */
       return out;
     }
 
-    function diag(label, value) {
-      return '<div class="diag-section"><div class="diag-label">' + esc(label) + '</div>' +
-             '<div class="diag-value">' + esc(value) + '</div></div>';
+    function btn(style, act, id, label) {
+      return '<button class="btn btn-' + style + '" data-act="' + act + '" data-id="' + id + '" aria-label="' + esc(label.replace(/[^a-zA-Z ]/g, "").trim()) + " " + id + '">' + label + "</button>";
     }
 
-    /* ── Action helpers ───────────────────────────────────────────── */
-    function cardActions(conn) {
-      const status = conn.health?.status ?? 'not_configured';
-      switch (status) {
-        case 'ready':
-          return [mkBtn('secondary', 'restart', conn.id, null, '&#8635; Restart')];
-        case 'crashed':
-          return [
-            mkBtn('primary',    'restart',         conn.id, null, '&#8635; Restart'),
-            mkBtn('secondary',  'copyDiagnostics',  conn.id, null, 'Copy diagnostics'),
-          ];
-        case 'degraded':
-          return [
-            mkBtn('secondary', 'restart',        conn.id, null, '&#8635; Restart'),
-            mkBtn('secondary', 'copyDiagnostics', conn.id, null, 'Copy diagnostics'),
-          ];
-        case 'auth_required':
-          return [mkBtn('primary', 'signIn', conn.id, null, '&#128273; Sign In')];
-        case 'dependency_missing':
-          return [mkBtn('primary', 'openSettings', conn.id, null, '&#8659; Install Tools')];
-        case 'version_mismatch':
-          return [mkBtn('secondary', 'openSettings', conn.id, null, 'Open Settings')];
-        case 'not_configured':
-          return [mkBtn('secondary', 'openSettings', conn.id, null, 'Configure')];
-        case 'unsafe_disabled':
-          return [mkBtn('secondary', 'openSettings', conn.id, null, 'Enable in Settings')];
-        default:
-          return [];
+    function simControl(id) {
+      let s = '<span class="sim-row"><label class="sr-only" for="sim-' + id + '">Simulate state for ' + id + '</label>';
+      s += '<select id="sim-' + id + '" data-sim-select="' + id + '">';
+      for (const mode of SIM_MODES) s += '<option value="' + mode + '">' + mode + "</option>";
+      s += "</select>";
+      s += '<button class="btn btn-secondary" data-act="simulate" data-id="' + id + '">Simulate</button></span>';
+      return s;
+    }
+
+    function diagBlock(label, value, code) {
+      let o = '<div><div class="diag-label">' + esc(label) + "</div>";
+      o += code ? ('<pre class="code">' + esc(value) + "</pre>") : ('<div style="font-size:0.88em">' + esc(value) + "</div>");
+      return o + "</div>";
+    }
+
+    function globalDiag() {
+      let o = '<details class="global-diag"><summary>Advanced diagnostics</summary><div class="diag-grid">';
+      if (gateway && gateway.available) {
+        o += '<div class="kv"><span>Gateway:</span> running &nbsp; <span>Version:</span> ' + esc(gateway.version) +
+             ' &nbsp; <span>PID:</span> ' + esc(gateway.pid) +
+             ' &nbsp; <span>Port:</span> ' + esc(gateway.port) +
+             ' &nbsp; <span>Uptime:</span> ' + (gateway.uptimeMs != null ? Math.round(gateway.uptimeMs / 1000) + "s" : "n/a") + "</div>";
+        if (gateway.hiddenUnsafe && gateway.hiddenUnsafe.length) {
+          o += diagBlock("Hidden unsafe tools", gateway.hiddenUnsafe.map(function (t) { return "• [" + t.connection + "] " + t.name + " — " + t.reason; }).join("\\n"), true);
+        } else {
+          o += diagBlock("Hidden unsafe tools", "None exposed by any downstream server.", false);
+        }
+        if (gateway.connectionsJson) o += diagBlock("Connection state (JSON)", gateway.connectionsJson, true);
+      } else {
+        o += '<div class="kv"><span>Gateway:</span> not responding &nbsp; <span>Port:</span> ' + esc(gateway ? gateway.port : "?") + "</div>";
       }
+      o += '<div class="card-actions"><button class="btn btn-secondary" data-act="copyAllDiagnostics">Copy diagnostics JSON</button></div>';
+      o += "</div></details>";
+      return o;
     }
 
-    function primaryBtn(conn) {
-      const status = conn.health?.status ?? 'not_configured';
-      switch (status) {
-        case 'crashed':            return mkBtn('primary',   'restart',      conn.id, null, '&#8635; Restart');
-        case 'auth_required':      return mkBtn('primary',   'signIn',       conn.id, null, '&#128273; Sign In');
-        case 'dependency_missing': return mkBtn('primary',   'openSettings', conn.id, null, '&#8659; Install');
-        case 'degraded':           return mkBtn('secondary', 'restart',      conn.id, null, '&#8635; Restart');
-        case 'version_mismatch':   return mkBtn('secondary', 'openSettings', conn.id, null, 'Settings');
-        default:                   return '';
-      }
-    }
-
-    function mkBtn(style, action, connId, mode, label) {
-      const modeAttr = mode ? ' data-mode="' + esc(mode) + '"' : '';
-      return '<button class="btn btn-' + style + '" data-action="' + esc(action) + '" data-conn="' + esc(connId) + '"' + modeAttr + ' aria-label="' + esc(label.replace(/&#[0-9]+;/g, '')) + ' ' + esc(connId) + '">' + label + '</button>';
-    }
-
-    /* ── Event delegation ─────────────────────────────────────────── */
-    function attachListeners() {
-      document.querySelectorAll('[data-action]').forEach(function (el) {
-        el.addEventListener('click', onAction);
+    /* ── Wiring ──────────────────────────────────────────────────── */
+    function wire() {
+      document.querySelectorAll("[data-act]").forEach(function (el) {
+        el.addEventListener("click", function () {
+          const act = el.getAttribute("data-act");
+          const id = el.getAttribute("data-id");
+          if (act === "simulate") {
+            const sel = document.querySelector('[data-sim-select="' + id + '"]');
+            send({ type: "simulate", connectionId: id, mode: sel ? sel.value : "ready" });
+          } else if (act === "copyAllDiagnostics") {
+            send({ type: "copyAllDiagnostics" });
+          } else {
+            send({ type: act, connectionId: id });
+          }
+        });
       });
-      document.querySelectorAll('.diag-toggle').forEach(function (el) {
-        el.addEventListener('click', onToggleDiag);
+      document.querySelectorAll("[data-fix]").forEach(function (el) {
+        el.addEventListener("click", function () {
+          const id = el.getAttribute("data-fix");
+          const conn = connections.find(function (c) { return c.id === id; });
+          if (!conn) return;
+          const primary = actionTypeFor(conn.status);
+          if (primary) send({ type: primary, connectionId: id });
+        });
       });
     }
 
-    function onAction(e) {
-      const el     = e.currentTarget;
-      const action = el.dataset.action;
-      const connId = el.dataset.conn;
-      const mode   = el.dataset.mode;
-
-      switch (action) {
-        case 'restart':          send({ type: 'restart',         connectionId: connId }); break;
-        case 'simulate':         send({ type: 'simulate',        connectionId: connId, mode: mode }); break;
-        case 'copyDiagnostics':  send({ type: 'copyDiagnostics', connectionId: connId }); break;
-        case 'signIn':           send({ type: 'signIn',          connectionId: connId }); break;
-        case 'openSettings':     send({ type: 'openSettings',    connectionId: connId }); break;
+    function actionTypeFor(status) {
+      switch (status) {
+        case "crashed":
+        case "degraded": return "restart";
+        case "auth_required": return "signIn";
+        case "not_configured": return "setup";
+        case "dependency_missing": return "setup";
+        case "unsafe_disabled": return "enableSafeMode";
+        default: return null;
       }
     }
 
-    function onToggleDiag(e) {
-      const btn    = e.currentTarget;
-      const connId = btn.dataset.conn;
-      const content = document.getElementById('diag-' + connId);
-      if (!content) return;
-      const opening = !content.classList.contains('open');
-      content.classList.toggle('open', opening);
-      btn.setAttribute('aria-expanded', String(opening));
-    }
-
-    /* ── Toast ────────────────────────────────────────────────────── */
-    function showToast(message, kind) {
-      const container = document.getElementById('toasts');
-      const el = document.createElement('div');
-      el.className = 'toast toast-' + kind;
-      el.setAttribute('role', 'alert');
+    /* ── Toast ───────────────────────────────────────────────────── */
+    function toast(message, kind) {
+      const c = document.getElementById("toasts");
+      const el = document.createElement("div");
+      el.className = "toast " + kind;
+      el.setAttribute("role", "alert");
       el.textContent = message;
-      container.appendChild(el);
-      setTimeout(function () { el.remove(); }, 4000);
+      c.appendChild(el);
+      setTimeout(function () { el.remove(); }, 4200);
     }
   })();
   </script>

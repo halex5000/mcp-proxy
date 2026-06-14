@@ -60,7 +60,71 @@ In VS Code:
 
 Use the Extension Development Host window for the rest of this test.
 
-## 6. Find The Connections View
+## Two UX surfaces
+
+There are two ways to view connections, and they serve different audiences:
+
+| Surface | Where | Audience | Purpose |
+| --- | --- | --- | --- |
+| **Connections Center** (webview) | Main editor tab | End users | **Primary product UX.** A polished, app-style dashboard of capability cards. This is the experience we are designing for. |
+| **Connections view** (TreeView) | Activity Bar sidebar | Developers | Dev/debug quick-status hatch. Proves the plumbing; not the product. |
+
+Verify both, but treat the **Connections Center** as the real deliverable.
+
+## 6a. Open The Connections Center (primary product UX)
+
+In the Extension Development Host:
+
+1. Run the command `Managed Connections: Open Connections Center`
+   (`Cmd/Ctrl+Shift+P` → type "Connections Center"), **or** click the
+   `Open Connections Center` button in the Connections sidebar toolbar.
+2. A full webview opens as an editor tab titled **Connections Center**.
+
+Expected dashboard:
+
+- Header "Connections" with a "Manage what the assistant can access." subtitle,
+  plus `Refresh` and `Verify setup` buttons.
+- A summary strip: **Ready / Needs attention / Not set up / Disabled** counts.
+- A "Needs attention" banner if anything is crashed / needs sign-in / degraded.
+- One capability card per connection:
+
+```text
+🧪 Test Echo            ✓ Connected
+3 tools available. Proves the local gateway is working end to end.
+[↻ Restart]  [Simulate ▾]   ▸ Technical details
+
+🐙 GitHub               🔑 Needs sign-in
+Work with repositories, issues, and pull requests.
+[🔑 Sign in]            ▸ Technical details
+
+📚 Project Knowledge    ○ Not set up
+Let the assistant recall and link your project's local files and docs.
+[Set up]                ▸ Technical details
+
+🗂️ Jira & Confluence    ○ Not set up
+Search Confluence docs and create or update Jira issues.
+[Set up]                ▸ Technical details
+
+🌐 Browser Automation   ⊘ Disabled
+Safe browser automation for navigating and reading web pages.
+[Enable safe mode]      ▸ Technical details
+```
+
+Things to try from the webview (every action is mediated by the extension —
+the webview never talks to the gateway directly):
+
+- **Refresh** and **Verify setup** from the header.
+- **Restart** Test Echo.
+- **Simulate** a Test Echo failure mode (pick from the dropdown, click Simulate),
+  then watch the card flip to the matching friendly state and the summary update.
+- Expand **Technical details** on a card → **Copy diagnostics JSON** / **Open full diagnostics**.
+- Expand the **Advanced diagnostics** section at the bottom → gateway status, port,
+  connection-state JSON, hidden unsafe tools, and **Copy diagnostics JSON**.
+
+Normal users should never see raw MCP / protocol / process errors unless they
+expand a Technical details or Advanced diagnostics disclosure.
+
+## 6b. Find The Connections View (dev/debug sidebar)
 
 In the Extension Development Host:
 

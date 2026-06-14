@@ -22,10 +22,16 @@ import type { ConnectionId } from "@mcp-proxy/shared";
 export class GatewayClient {
   private baseUrl: string;
   private token: string;
+  private _port: number;
 
   constructor(port: number, token: string) {
     this.baseUrl = `http://127.0.0.1:${port}${CONTROL_PREFIX}`;
     this.token = token;
+    this._port = port;
+  }
+
+  get port(): number {
+    return this._port;
   }
 
   async getStatus(): Promise<GatewayStatusResponse> {

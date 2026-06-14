@@ -68,8 +68,24 @@ VS Code Extension (extension host process)
   ConnectionManager  — assembles config from VS Code settings + auth
   ManagedMcpProvider — registers the gateway as McpHttpServerDefinition
   HealthMonitor      — polls /status every 5s, fires change events
-  ConnectionsTreeView — sidebar panel driven purely by health states
+  ConnectionsCenterPanel — webview dashboard; the primary product UX (editor tab)
+  ConnectionsTreeView — sidebar panel; dev/debug quick-status hatch
 ```
+
+### Two UX surfaces
+
+The extension presents connections two ways:
+
+- **Connections Center** (`ConnectionsCenterPanel`) — a polished, app-style
+  webview that opens as an editor tab via `Managed Connections: Open Connections
+  Center`. Capability cards, a status summary, a "needs attention" banner, and
+  collapsible advanced diagnostics. This is the **primary product UX**. The
+  webview owns UI only and never talks to the gateway directly — every action
+  goes `webview → postMessage → extension → GatewayClient → gateway /control`,
+  because the extension owns the gateway bearer token, port, and VS Code
+  integration.
+- **Connections view** (`ConnectionsTreeProvider`) — the Activity Bar sidebar
+  tree. Kept as a developer/debug quick-status surface, not the product.
 
 ### Why a gateway instead of direct registration?
 
