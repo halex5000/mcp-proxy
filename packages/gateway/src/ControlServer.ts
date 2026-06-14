@@ -1,8 +1,9 @@
-import express, { type Request, type Response } from "express";
-import * as http from "http";
+import type { Express, Request, Response, Router } from "express";
+import express from "express";
 import type { Supervisor } from "./supervisor/Supervisor.js";
 import type { HealthAggregator } from "./health/HealthAggregator.js";
 import type { McpProxy } from "./proxy/McpProxy.js";
+import { CONTROL_PREFIX } from "@mcp-proxy/shared";
 import type {
   GatewayStatusResponse,
   ConfigureRequest,
@@ -13,18 +14,19 @@ import type {
 import type { ConnectionId, GatewayConfig } from "@mcp-proxy/shared";
 
 /**
- * ControlServer is the HTTP control plane the VS Code extension uses to:
- *   - Poll connection health
- *   - Trigger restarts
- *   - Read diagnostic logs
- *   - Reconfigure the gateway (new auth tokens, enabled/disabled connections)
+ * ControlServer mounts the extension-facing control plane on the shared Express
+ * app under CONTROL_PREFIX (/control). The extension uses it to:
+ *   - Poll connection health   (GET  /control/status)
+ *   - Reconfigure the gateway  (POST /control/configure)
+ *   - Restart a connection     (POST /control/connections/:id/restart)
+ *   - Read logs / diagnostics  (GET  /control/connections/:id/logs|diagnostics)
  *
- * It listens on a random port announced to the extension via stdout.
- * Only localhost connections are accepted.
+ * It no longer owns its own HTTP server — index.ts runs a single multiplexed
+ * server that hosts both this control plane and the /mcp transport, so there is
+ * exactly one process and one port. Auth (bearer token) and the localhost guard
+ * are applied app-wide in index.ts.
  */
 export class ControlServer {
-  private app = express();
-  private server: http.Server | null = null;
   private supervisor: Supervisor;
   private healthAggregator: HealthAggregator;
   private proxies = new Map<ConnectionId, McpProxy>();
@@ -35,7 +37,6 @@ export class ControlServer {
   constructor(supervisor: Supervisor, healthAggregator: HealthAggregator) {
     this.supervisor = supervisor;
     this.healthAggregator = healthAggregator;
-    this.setupRoutes();
   }
 
   setOnConfigure(handler: (config: GatewayConfig) => Promise<void>): void {
@@ -46,48 +47,14 @@ export class ControlServer {
     this.proxies.set(id, proxy);
   }
 
-  async listen(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      this.server = http.createServer(this.app);
-      this.server.listen(0, "127.0.0.1", () => {
-        const addr = this.server!.address();
-        if (!addr || typeof addr === "string") {
-          reject(new Error("Failed to get server address"));
-          return;
-        }
-        resolve(addr.port);
-      });
-    });
-  }
-
-  async close(): Promise<void> {
-    return new Promise((resolve) => {
-      if (!this.server) {
-        resolve();
-        return;
-      }
-      this.server.close(() => resolve());
-    });
-  }
-
-  private setupRoutes(): void {
-    this.app.use(express.json());
-
-    // Reject non-localhost requests
-    this.app.use((req: Request, res: Response, next) => {
-      const ip = req.socket.remoteAddress;
-      if (ip !== "127.0.0.1" && ip !== "::1" && ip !== "::ffff:127.0.0.1") {
-        res.status(403).json({ error: "Forbidden" });
-        return;
-      }
-      next();
-    });
-
-    this.app.get("/status", this.handleStatus.bind(this));
-    this.app.post("/configure", this.handleConfigure.bind(this));
-    this.app.post("/connections/:id/restart", this.handleRestart.bind(this));
-    this.app.get("/connections/:id/logs", this.handleLogs.bind(this));
-    this.app.get("/connections/:id/diagnostics", this.handleDiagnostics.bind(this));
+  mount(app: Express): void {
+    const router: Router = express.Router();
+    router.get("/status", this.handleStatus.bind(this));
+    router.post("/configure", this.handleConfigure.bind(this));
+    router.post("/connections/:id/restart", this.handleRestart.bind(this));
+    router.get("/connections/:id/logs", this.handleLogs.bind(this));
+    router.get("/connections/:id/diagnostics", this.handleDiagnostics.bind(this));
+    app.use(CONTROL_PREFIX, router);
   }
 
   private handleStatus(_req: Request, res: Response): void {

@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "node",
+    "composite": true,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,

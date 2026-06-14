@@ -88,10 +88,11 @@ First-run caveat (applies to any registration method): VS Code does **not** auto
 ┌─────────────────────────────────────────────────────────────┐
 │  Gateway Process  (Node.js, bundled with extension)         │
 │                                                             │
+│   Single Express server on 127.0.0.1:PORT (bearer-token guarded)            │
 │  ┌───────────────┐    ┌─────────────────────────────────┐  │
-│  │  MCP Server   │    │  HTTP Control API :PORT         │  │
-│  │  (stdio, to   │    │  GET  /status                   │  │
-│  │   VS Code)    │    │  POST /configure                │  │
+│  │  POST /mcp    │    │  /control/* (extension only)    │  │
+│  │  Streamable   │    │  GET  /status                   │  │
+│  │  HTTP → VSCode│    │  POST /configure                │  │
 │  │               │    │  POST /connections/:id/restart  │  │
 │  │  Tools:       │    │  GET  /connections/:id/logs     │  │
 │  │  github__*    │    │  GET  /connections/:id/diag..  │  │
@@ -108,7 +109,7 @@ First-run caveat (applies to any registration method): VS Code does **not** auto
 │  └──────────────────────────────────────────────────┘   │  │
 │                           │                              │  │
 │               ┌───────────┴──────────────┐              │  │
-│               │ MCP stdio                │              │  │
+│               │ MCP stdio (downstream)   │              │  │
 │               ▼                          ▼              │  │
 │     ┌──────────────────┐      ┌─────────────────┐      │  │
 │     │ local-knowledge  │      │ playwright       │      │  │
@@ -150,7 +151,7 @@ mcp-proxy/
 │   │       ├── types.ts                 # ConnectionDefinition, GatewayConfig
 │   │       └── index.ts
 │   │
-│   ├── gateway/                         # Gateway process (MCP stdio + HTTP control)
+│   ├── gateway/                         # Gateway process (/mcp HTTP + /control on one port)
 │   │   └── src/
 │   │       ├── index.ts                 # Entry point: start control API + MCP server
 │   │       ├── GatewayServer.ts         # MCP server VS Code connects to
@@ -243,25 +244,31 @@ mcp-proxy/
 
 ```typescript
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  // Spawn gateway, wait for port announcement on stderr
+  // Spawn the single gateway process (token generated in its constructor,
+  // passed to the child via GATEWAY_AUTH_TOKEN); wait for the port on stderr.
   const gatewayProcess = new GatewayProcess(context);
   const port = await gatewayProcess.start();
 
-  // VS Code connects to the gateway (one entry point for all connections)
+  // Register the gateway's /mcp HTTP endpoint. VS Code connects as a CLIENT
+  // (it does not spawn the process) — the McpHttpServerDefinition carries the
+  // localhost URI and the bearer header. One entry point for all connections.
   const mcpProvider = new ManagedMcpProvider(gatewayProcess);
   context.subscriptions.push(
     vscode.lm.registerMcpServerDefinitionProvider(
-      { id: "managed-connections" },
+      "managed-connections",  // matches contributes.mcpServerDefinitionProviders id
       mcpProvider
     )
   );
 
+  // Control-plane client, authenticated with the same token.
+  const client = new GatewayClient(port, gatewayProcess.authToken);
+
   // Push config (settings + auth tokens) to gateway
-  const connectionManager = new ConnectionManager(new GatewayClient(port), context);
+  const connectionManager = new ConnectionManager(client, context);
   await connectionManager.pushConfig();
 
   // Poll health and drive the UI
-  const healthMonitor = new HealthMonitor(new GatewayClient(port));
+  const healthMonitor = new HealthMonitor(client);
   healthMonitor.start();
 }
 ```
@@ -314,15 +321,23 @@ that Copilot can read via the `get_connection_health` meta-tool and relay to use
 The gateway is a Node.js binary bundled with the extension. It runs as a child
 process spawned by the extension host.
 
-**Two interfaces:**
+**Two interfaces on one multiplexed localhost HTTP server (one port):**
 
-1. **MCP stdio** (to VS Code): The gateway speaks MCP protocol on stdin/stdout.
-   VS Code connects here for all tool calls. The gateway aggregates tools from
-   all downstream servers under a unified namespace.
+1. **`POST /mcp`** (to VS Code): The gateway speaks MCP over the Streamable HTTP
+   transport. VS Code connects here as a client for all tool calls (registered
+   via `McpHttpServerDefinition`). The gateway aggregates tools from all
+   downstream servers under a unified namespace.
 
-2. **HTTP control API** (to the extension, localhost only): The extension uses
-   this for health polling, restart commands, diagnostics retrieval, and
-   configuration pushes.
+2. **`/control/*`** (to the extension, localhost only): The extension uses this
+   for health polling, restart commands, diagnostics retrieval, and configuration
+   pushes.
+
+Both endpoints require an `Authorization: Bearer <token>` header. The extension
+generates the token, passes it to the gateway via the `GATEWAY_AUTH_TOKEN` env var
+at spawn, then supplies it in the `McpHttpServerDefinition` headers and on every
+control request — so only VS Code's registered client and the owning extension can
+reach the gateway. Downstream servers are still spawned as child processes and
+proxied over **MCP stdio** (that part is unchanged).
 
 **Port announcement:** Gateway writes `GATEWAY_READY port=XXXX` to stderr.
 The extension reads this line to know where the control API is.
@@ -545,9 +560,9 @@ Mitigation: Build the spike first and test empirically. The gateway pattern insu
 
 ### What to build
 
-1. **Gateway** (50 lines): Start MCP stdio server + HTTP control API on random port. Announce port on stderr. Expose `/status` with hardcoded health. Expose `get_connection_health` meta-tool.
+1. **Gateway** (50 lines): Start one Express server (random port) serving `/mcp` (Streamable HTTP MCP transport) and `/control/status` (hardcoded health). Announce port on stderr. Expose `get_connection_health` meta-tool.
 
-2. **Extension** (100 lines): Spawn gateway. Read port from stderr. Register gateway as `McpServerDefinitionProvider`. Show health in Output Channel. Add one command: `managedConnections.showStatus`.
+2. **Extension** (100 lines): Spawn gateway with a bearer token. Read port from stderr. Register the gateway's `http://127.0.0.1:<port>/mcp` URI as an `McpHttpServerDefinition`. Show health in Output Channel. Add one command: `managedConnections.showStatus`.
 
 3. **Tree view** (50 lines): Single item: "Gateway — Connected" or "Gateway — Starting".
 
@@ -580,4 +595,4 @@ If this works, the architecture is proven.
 
 5. **Extension activation timing**: `onStartupFinished` may be too early for some environments (slow machines, remote containers). Should we delay gateway startup until Copilot first attempts a tool call? *Note:* `provideMcpServerDefinitions` is called eagerly by VS Code and must not perform user interaction; auth/interaction belongs in `resolveMcpServerDefinition`, which is called when the server is started.
 
-6. **Gateway process identity** — *RESOLVED (2026-06-14).* The dual-process problem is eliminated by using `McpHttpServerDefinition` instead of `McpStdioServerDefinition`. For stdio definitions VS Code owns the process lifecycle (so the extension would be monitoring a different process than Copilot uses); for HTTP definitions VS Code is merely a client. The extension therefore spawns **one** gateway process and exposes both the MCP transport (`POST /mcp`) and the control API (`/control/*`) on a single multiplexed localhost port. See "Transport Decision" in §2. **Code impact:** `ManagedMcpProvider` must return an `McpHttpServerDefinition` (not `StdioMcpServerDefinition`), and the gateway must serve `StreamableHTTPServerTransport` on `/mcp` rather than stdio — the current spike still uses the stdio path and needs this refactor.
+6. **Gateway process identity** — *RESOLVED (2026-06-14).* The dual-process problem is eliminated by using `McpHttpServerDefinition` instead of `McpStdioServerDefinition`. For stdio definitions VS Code owns the process lifecycle (so the extension would be monitoring a different process than Copilot uses); for HTTP definitions VS Code is merely a client. The extension therefore spawns **one** gateway process and exposes both the MCP transport (`POST /mcp`) and the control API (`/control/*`) on a single multiplexed localhost port. See "Transport Decision" in §2. **Code status:** implemented — `ManagedMcpProvider` returns an `McpHttpServerDefinition`, and the gateway serves `StreamableHTTPServerTransport` on `/mcp` multiplexed with `/control/*` on a single bearer-guarded port (`McpHttpEndpoint.ts`, `ControlServer.ts`, `index.ts`).

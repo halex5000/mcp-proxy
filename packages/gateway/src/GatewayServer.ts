@@ -1,5 +1,4 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { McpProxy } from "./proxy/McpProxy.js";
 import type { ConnectionId } from "@mcp-proxy/shared";
@@ -7,17 +6,21 @@ import type { HealthAggregator } from "./health/HealthAggregator.js";
 import type { Supervisor } from "./supervisor/Supervisor.js";
 
 /**
- * GatewayServer is the MCP server VS Code connects to via stdio.
+ * GatewayServer builds the MCP server that VS Code connects to over the
+ * Streamable HTTP transport (see McpHttpEndpoint).
  *
- * It presents a unified tool namespace by aggregating tools from all active
- * downstream proxies. Tool names are namespaced by connection ID to prevent
- * collisions (e.g., github__create_issue, jira__create_issue).
+ * It is a *factory*: each MCP session gets a freshly built McpServer via
+ * buildServer(), configured with the current set of visible proxied tools plus
+ * always-available meta-tools. The proxy registry is shared and updated live;
+ * tool changes are picked up the next time a session is established. (This
+ * matches VS Code's behavior — programmatically registered servers cache their
+ * tool list per session.)
  *
- * It also exposes meta-tools that Copilot can call to understand connection
- * health, enabling the assistant to explain problems to users autonomously.
+ * Tools are namespaced by connection ID (e.g. github__create_issue) to prevent
+ * collisions. The meta-tools (get_connection_health, get_available_tools) let
+ * Copilot diagnose connection problems and explain them to users autonomously.
  */
 export class GatewayServer {
-  private server: McpServer;
   private proxies = new Map<ConnectionId, McpProxy>();
   private healthAggregator: HealthAggregator;
   private supervisor: Supervisor;
@@ -25,39 +28,35 @@ export class GatewayServer {
   constructor(healthAggregator: HealthAggregator, supervisor: Supervisor) {
     this.healthAggregator = healthAggregator;
     this.supervisor = supervisor;
-
-    this.server = new McpServer({
-      name: "mcp-gateway",
-      version: "0.1.0",
-    });
-
-    this.registerMetaTools();
   }
 
   registerProxy(id: ConnectionId, proxy: McpProxy): void {
     this.proxies.set(id, proxy);
-    this.refreshTools();
   }
 
   removeProxy(id: ConnectionId): void {
     this.proxies.delete(id);
-    this.refreshTools();
   }
 
-  async start(): Promise<void> {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
+  /** Build a fresh McpServer configured with current tools. Called per session. */
+  buildServer(): McpServer {
+    const server = new McpServer({
+      name: "mcp-gateway",
+      version: "0.1.0",
+    });
+
+    this.registerMetaTools(server);
+    this.registerProxiedTools(server);
+
+    return server;
   }
 
-  private refreshTools(): void {
-    // Re-register all tools from active proxies.
-    // In practice, we'd use server.setRequestHandler with a dynamic list;
-    // here we register each tool directly as a typed handler.
+  private registerProxiedTools(server: McpServer): void {
     for (const [id, proxy] of this.proxies) {
       for (const tool of proxy.tools) {
         if (!tool.isVisible) continue;
 
-        this.server.tool(
+        server.tool(
           tool.publicName,
           tool.description ?? `Tool from ${id}`,
           { input: z.record(z.unknown()).optional() },
@@ -91,8 +90,8 @@ export class GatewayServer {
    * Meta-tools are always available regardless of downstream connection state.
    * They let Copilot diagnose connection problems and explain them to users.
    */
-  private registerMetaTools(): void {
-    this.server.tool(
+  private registerMetaTools(server: McpServer): void {
+    server.tool(
       "get_connection_health",
       [
         "Returns the current health and status of all managed connections.",
@@ -136,7 +135,7 @@ export class GatewayServer {
       }
     );
 
-    this.server.tool(
+    server.tool(
       "get_available_tools",
       [
         "Lists all tools currently available through managed connections.",

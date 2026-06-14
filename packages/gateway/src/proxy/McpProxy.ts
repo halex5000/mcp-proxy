@@ -51,7 +51,7 @@ export class McpProxy {
 
     this.client = new Client(
       { name: "mcp-gateway", version: "0.1.0" },
-      { capabilities: { tools: {} } }
+      { capabilities: {} }
     );
 
     await this.client.connect(transport);

@@ -46,7 +46,7 @@ export async function activate(
   }
 
   // ── 2. Control API client ─────────────────────────────────────────────────
-  const gatewayClient = new GatewayClient(gatewayPort);
+  const gatewayClient = new GatewayClient(gatewayPort, gatewayProcess.authToken);
 
   // ── 3. Register the gateway as an MCP server provider ────────────────────
   //
@@ -56,7 +56,7 @@ export async function activate(
   const mcpProvider = new ManagedMcpProvider(gatewayProcess);
   context.subscriptions.push(
     vscode.lm.registerMcpServerDefinitionProvider(
-      { id: "managed-connections" },
+      "managed-connections",
       mcpProvider
     )
   );

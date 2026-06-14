@@ -1,19 +1,46 @@
 /**
  * IPC contract between the VS Code extension and the gateway process.
  *
- * Transport: The extension talks to the gateway over a local HTTP control
- * server (random port announced on gateway stdout at startup).
- * The gateway uses MCP stdio as the data plane to VS Code.
+ * Transport: ONE extension-owned gateway process serves two endpoints on a
+ * single multiplexed localhost HTTP server (random port announced on startup):
+ *
+ *   POST/GET/DELETE  /mcp        → MCP Streamable HTTP transport.
+ *                                  VS Code/Copilot connects here as a client.
+ *                                  Registered via vscode.McpHttpServerDefinition.
+ *   *                /control/*  → Control API used by the extension for
+ *                                  health, restart, configure, logs.
+ *
+ * Both endpoints require an Authorization: Bearer <token> header. The extension
+ * generates the token and passes it to the gateway via the GATEWAY_AUTH_TOKEN
+ * env var at spawn time, then supplies the same token in the McpHttpServerDefinition
+ * headers and on every control request. This ensures only VS Code's registered
+ * client and the owning extension can reach the gateway.
  *
  * Startup handshake:
- *   Extension spawns gateway → gateway prints GATEWAY_READY port=XXXX → extension
- *   connects to http://127.0.0.1:XXXX for control commands.
+ *   Extension spawns gateway (with GATEWAY_AUTH_TOKEN env) → gateway prints
+ *   GATEWAY_READY port=XXXX on stderr → extension connects to
+ *   http://127.0.0.1:XXXX for both /mcp (via VS Code) and /control/*.
  */
 
 import type { ConnectionHealth, StructuredDiagnostics } from "./health.js";
 import type { ConnectionId, GatewayConfig } from "./types.js";
 
-// ── Startup announcement (stdout) ──────────────────────────────────────────
+// ── Endpoint paths & auth ───────────────────────────────────────────────────
+
+/** MCP Streamable HTTP endpoint — what VS Code's McpHttpServerDefinition targets. */
+export const MCP_PATH = "/mcp";
+
+/** Prefix for all extension control-plane routes. */
+export const CONTROL_PREFIX = "/control";
+
+/** Env var the extension uses to hand the shared bearer token to the gateway. */
+export const AUTH_TOKEN_ENV = "GATEWAY_AUTH_TOKEN";
+
+export function authHeader(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}` };
+}
+
+// ── Startup announcement (stderr) ───────────────────────────────────────────
 
 export const GATEWAY_READY_PREFIX = "GATEWAY_READY port=";
 

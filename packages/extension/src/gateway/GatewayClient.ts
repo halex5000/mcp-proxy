@@ -1,3 +1,7 @@
+import {
+  authHeader,
+  CONTROL_PREFIX,
+} from "@mcp-proxy/shared";
 import type {
   GatewayStatusResponse,
   RestartResponse,
@@ -9,14 +13,17 @@ import type {
 import type { ConnectionId } from "@mcp-proxy/shared";
 
 /**
- * GatewayClient is the HTTP client for the gateway control API.
- * It speaks to the ControlServer running inside the gateway process.
+ * GatewayClient is the HTTP client for the gateway control plane.
+ * It speaks to the /control routes on the single gateway process, authenticating
+ * with the shared bearer token the extension passed to the gateway at spawn.
  */
 export class GatewayClient {
   private baseUrl: string;
+  private token: string;
 
-  constructor(port: number) {
-    this.baseUrl = `http://127.0.0.1:${port}`;
+  constructor(port: number, token: string) {
+    this.baseUrl = `http://127.0.0.1:${port}${CONTROL_PREFIX}`;
+    this.token = token;
   }
 
   async getStatus(): Promise<GatewayStatusResponse> {
@@ -40,7 +47,9 @@ export class GatewayClient {
   }
 
   private async get<T>(path: string): Promise<T> {
-    const response = await fetch(this.baseUrl + path);
+    const response = await fetch(this.baseUrl + path, {
+      headers: { ...authHeader(this.token) },
+    });
     if (!response.ok) {
       throw new Error(`GET ${path} returned ${response.status}`);
     }
@@ -50,7 +59,7 @@ export class GatewayClient {
   private async post<T>(path: string, body: unknown): Promise<T> {
     const response = await fetch(this.baseUrl + path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeader(this.token) },
       body: JSON.stringify(body),
     });
     if (!response.ok) {

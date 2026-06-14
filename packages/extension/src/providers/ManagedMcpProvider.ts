@@ -1,19 +1,30 @@
 import * as vscode from "vscode";
+import { authHeader } from "@mcp-proxy/shared";
 import type { GatewayProcess } from "../gateway/GatewayProcess.js";
 
 /**
  * ManagedMcpProvider implements VS Code's McpServerDefinitionProvider API.
  *
- * It registers a SINGLE managed entry point: the gateway process.
- * VS Code connects to the gateway via stdio, and the gateway internally
- * manages all downstream MCP servers.
+ * It registers a SINGLE managed entry point: the gateway's /mcp HTTP endpoint.
+ * Crucially this is an *HTTP* definition, not a stdio one. The difference is the
+ * whole architecture:
  *
- * This is the critical seam: by registering the gateway here instead of
- * individual servers, we get:
- *  - Centralized health management
- *  - Unified tool namespace
- *  - Zero manual mcp.json editing
- *  - Hot-reload of downstream server configs without disrupting the Copilot session
+ *   - With McpStdioServerDefinition, VS Code spawns and owns the process. The
+ *     extension would then be monitoring/restarting a DIFFERENT process than the
+ *     one Copilot talks to (the extension spawns its own for the control API).
+ *
+ *   - With McpHttpServerDefinition, VS Code is just an HTTP client. The extension
+ *     spawns the one and only gateway process, owns its lifecycle, and points
+ *     VS Code at its localhost /mcp endpoint. Health, restart, and diagnostics
+ *     all act on the exact process Copilot uses.
+ *
+ * Benefits this unlocks:
+ *   - Downstream connection restarts happen inside the gateway; the /mcp endpoint
+ *     stays up, so Copilot's MCP session is never torn down.
+ *   - The bearer token (passed in headers) ensures only VS Code's registered
+ *     client can reach /mcp.
+ *   - A full gateway restart changes the port; we fire onDidChange so VS Code
+ *     reconnects to the new URI.
  */
 export class ManagedMcpProvider
   implements vscode.McpServerDefinitionProvider
@@ -26,57 +37,50 @@ export class ManagedMcpProvider
   constructor(gatewayProcess: GatewayProcess) {
     this.gatewayProcess = gatewayProcess;
 
-    // When the gateway crashes and restarts, tell VS Code to re-fetch definitions.
-    // In practice VS Code will reconnect to the new process automatically if we
-    // fire this event.
-    gatewayProcess.onCrash(() => {
+    // On (re)start the port may change → tell VS Code to re-fetch definitions
+    // so it reconnects to the new localhost URI.
+    gatewayProcess.onReady(() => {
       this._onDidChangeMcpServerDefinitions.fire();
     });
-
-    gatewayProcess.onReady(() => {
+    gatewayProcess.onCrash(() => {
       this._onDidChangeMcpServerDefinitions.fire();
     });
   }
 
+  /**
+   * Called eagerly by VS Code. Must NOT perform user interaction (auth etc.) —
+   * that belongs in resolveMcpServerDefinition. We only return the localhost
+   * endpoint of the already-running gateway.
+   */
   provideMcpServerDefinitions(
     _token: vscode.CancellationToken
   ): vscode.ProviderResult<vscode.McpServerDefinition[]> {
-    if (!this.gatewayProcess.isRunning) {
+    const uri = this.gatewayProcess.mcpUri;
+    if (!this.gatewayProcess.isRunning || !uri) {
       return [];
     }
 
-    // Return a single stdio server definition: the gateway process.
-    // VS Code will spawn it separately; the GatewayProcess class tracks the
-    // extension-side instance for the control API.
-    //
-    // Note: VS Code spawns the process itself based on this definition.
-    // The extension's GatewayProcess class is a parallel instance used ONLY
-    // for the control API (health polling, restarts, diagnostics).
-    // The definition below is what VS Code actually runs for MCP communication.
-    const definition = new vscode.StdioMcpServerDefinition(
+    const definition = new vscode.McpHttpServerDefinition(
       "Managed Connections",
-      process.execPath,
-      [this.getGatewayBundlePath()],
-      {
-        NODE_ENV: "production",
-        // VS Code's process is the MCP stdio gateway; the extension's
-        // GatewayProcess instance runs a SEPARATE control-only copy.
-        GATEWAY_MODE: "mcp",
-      }
+      vscode.Uri.parse(uri),
+      authHeader(this.gatewayProcess.authToken),
+      "0.1.0"
     );
 
     return [definition];
   }
 
-  private getGatewayBundlePath(): string {
-    // Resolved at runtime relative to extension installation path.
-    // In development this is packages/gateway/dist/index.js.
-    const ext = vscode.extensions.getExtension("your-publisher.managed-mcp-connections");
-    if (!ext) {
-      throw new Error("Cannot resolve own extension path");
-    }
-    const path = require("path") as typeof import("path");
-    return path.join(ext.extensionPath, "dist", "gateway", "index.js");
+  /**
+   * Called when VS Code is about to start/connect the server. This is where
+   * user-interactive work (auth) would go. For the local gateway there is
+   * nothing to resolve — downstream auth is handled by the extension pushing
+   * tokens over the control API — so we return the definition unchanged.
+   */
+  resolveMcpServerDefinition(
+    server: vscode.McpServerDefinition,
+    _token: vscode.CancellationToken
+  ): vscode.ProviderResult<vscode.McpServerDefinition> {
+    return server;
   }
 
   dispose(): void {
