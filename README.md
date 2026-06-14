@@ -216,11 +216,14 @@ npm run build
 ```bash
 npm run smoke
 npm test
+npm run test:extension-ui
 ```
 
 `npm run smoke` boots the gateway, configures `test-echo`, verifies `/control/status`, initializes MCP over HTTP, lists tools, invokes echo, proves unsafe tool filtering, simulates a downstream crash, and recovers with Restart.
 
-`npm test` adds unit coverage for health state normalization and tool filtering.
+`npm test` adds unit coverage for health state normalization, tool filtering, Connections panel presentation, command rules, and the gateway integration path.
+
+`npm run test:extension-ui` runs only the pure Connections panel and command-rule tests. These verify all required user-facing states without launching VS Code.
 
 Manual proof docs:
 

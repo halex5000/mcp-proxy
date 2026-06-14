@@ -105,6 +105,7 @@ Run the automated proof:
 ```bash
 npm run smoke
 npm test
+npm run test:extension-ui
 ```
 
 ---

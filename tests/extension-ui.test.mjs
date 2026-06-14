@@ -1,0 +1,125 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const shared = require("../packages/shared/dist/index.js");
+const {
+  presentConnection,
+  presentConnectionInfoItems,
+} = require("../packages/extension/dist/providers/ConnectionPresentation.js");
+const {
+  nextEnabledConnections,
+  simulationDescription,
+} = require("../packages/extension/dist/commands/CommandRules.js");
+
+const EXPECTED_STATES = {
+  ready: { iconId: "check", primaryAction: undefined, label: "Connected" },
+  starting: { iconId: "loading~spin", primaryAction: undefined, label: "Starting…" },
+  auth_required: { iconId: "key", primaryAction: "sign-in", label: "Needs sign-in" },
+  crashed: { iconId: "error", primaryAction: "restart", label: "Crashed" },
+  degraded: { iconId: "warning", primaryAction: "restart", label: "Partial" },
+  blocked_by_policy: { iconId: "lock", primaryAction: "contact-admin", label: "Blocked" },
+  version_mismatch: { iconId: "versions", primaryAction: "update-extension", label: "Update required" },
+  unsafe_disabled: { iconId: "circle-slash", primaryAction: "enable", label: "Disabled (safe mode)" },
+  dependency_missing: { iconId: "cloud-download", primaryAction: "install-dependency", label: "Setup needed" },
+  not_configured: { iconId: "circle-outline", primaryAction: "open-settings", label: "Not set up" },
+};
+
+const RAW_DETAIL_PATTERNS = [
+  /json-rpc/i,
+  /\bstdio\b/i,
+  /mcp-session-id/i,
+  /module_not_found/i,
+  /cannot find module/i,
+  /stack trace/i,
+  /gobbledegook/i,
+  /mcp\.json/i,
+  /GATEWAY_READY/i,
+];
+
+test("connection presentation covers every required UI state", () => {
+  for (const [status, expected] of Object.entries(EXPECTED_STATES)) {
+    const health = healthFor(status, {
+      detail:
+        "JSON-RPC stdio MODULE_NOT_FOUND Cannot find module /tmp/raw MCP detail",
+      technicalMessage:
+        "GATEWAY_READY port=1234; mcp-session-id abc; edit mcp.json",
+    });
+
+    const presentation = presentConnection(health);
+
+    assert.equal(presentation.status, status);
+    assert.equal(presentation.description, expected.label);
+    assert.equal(presentation.iconId, expected.iconId);
+    assert.equal(presentation.primaryAction, expected.primaryAction);
+    assert.equal(presentation.secondaryAction, "open-diagnostics");
+    assert.equal(presentation.contextValue, `connection-${status}`);
+    assert.ok(presentation.userMessage.length > 0);
+
+    for (const pattern of RAW_DETAIL_PATTERNS) {
+      assert.doesNotMatch(
+        presentation.tooltipMarkdown,
+        pattern,
+        `${status} leaked raw detail into normal UI`
+      );
+    }
+  }
+});
+
+test("ready presentation shows available and hidden tools in friendly words", () => {
+  const health = healthFor("ready", {
+    toolCount: 3,
+    hiddenToolCount: 2,
+    hiddenTools: [
+      {
+        name: "test-echo__shell_exec",
+        reason: "Hidden because it can run code.",
+        isSafe: false,
+      },
+    ],
+  });
+
+  const presentation = presentConnection(health);
+  const infoItems = presentConnectionInfoItems(health);
+
+  assert.match(presentation.tooltipMarkdown, /3 tools available/);
+  assert.match(presentation.tooltipMarkdown, /2 advanced tools hidden for safety/);
+  assert.deepEqual(infoItems, [
+    { label: "3 tools available", iconId: "tools" },
+    { label: "2 advanced tools hidden", iconId: "shield" },
+  ]);
+});
+
+test("command rules toggle enabled connections deterministically", () => {
+  assert.deepEqual(
+    nextEnabledConnections(["github"], "test-echo", true),
+    ["github", "test-echo"]
+  );
+  assert.deepEqual(
+    nextEnabledConnections(["github", "test-echo"], "test-echo", true),
+    ["github", "test-echo"]
+  );
+  assert.deepEqual(
+    nextEnabledConnections(["github", "test-echo", "test-echo"], "test-echo", false),
+    ["github"]
+  );
+});
+
+test("every simulation mode has a picker description", () => {
+  for (const mode of shared.SIMULATION_MODES) {
+    assert.ok(simulationDescription(mode).length > 0, mode);
+  }
+});
+
+function healthFor(status, overrides = {}) {
+  return {
+    ...shared.makeDefaultHealth(status, "test-echo", "managed"),
+    ...overrides,
+    status,
+    state: status,
+    label: shared.HEALTH_LABELS[status],
+    userMessage: shared.HEALTH_MESSAGES[status],
+    message: shared.HEALTH_MESSAGES[status],
+  };
+}

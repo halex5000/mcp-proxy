@@ -7,6 +7,7 @@ import type { GatewayProcess } from "../gateway/GatewayProcess.js";
 import type { DiagnosticsPanel } from "../ui/DiagnosticsPanel.js";
 import type { ConnectionId, SimulationMode } from "@mcp-proxy/shared";
 import { SIMULATION_MODES } from "@mcp-proxy/shared";
+import { nextEnabledConnections, simulationDescription } from "./CommandRules.js";
 
 export function registerCommands(
   context: vscode.ExtensionContext,
@@ -203,9 +204,7 @@ async function pickConnection(prompt: string): Promise<ConnectionId | undefined>
 async function toggleConnection(id: ConnectionId, enable: boolean): Promise<void> {
   const config = vscode.workspace.getConfiguration("managedConnections");
   const current: string[] = config.get("enabledConnections") ?? [];
-  const next = enable
-    ? [...new Set([...current, id])]
-    : current.filter((c) => c !== id);
+  const next = nextEnabledConnections(current, id, enable);
   await config.update("enabledConnections", next, vscode.ConfigurationTarget.Workspace);
 }
 
@@ -214,33 +213,4 @@ async function withProgress(title: string, fn: () => Promise<void>): Promise<voi
     { location: vscode.ProgressLocation.Window, title },
     fn
   );
-}
-
-function simulationDescription(mode: SimulationMode): string {
-  switch (mode) {
-    case "ready":
-      return "Healthy fake downstream server";
-    case "slow_start":
-      return "Starts slowly, then becomes ready";
-    case "crash_on_start":
-      return "Process exits immediately";
-    case "crash_after_delay":
-      return "Process starts, then exits";
-    case "crash_during_tool_call":
-      return "Crashes when echo is invoked";
-    case "hang":
-      return "Process never answers MCP initialize";
-    case "bad_json":
-      return "Emits invalid JSON on stdout";
-    case "auth_required":
-      return "Shows friendly sign-in required state";
-    case "dependency_missing":
-      return "Shows setup needed state";
-    case "version_mismatch":
-      return "Shows update required state";
-    case "blocked_by_policy":
-      return "Shows admin blocked state";
-    case "unsafe_tools":
-      return "Exposes unsafe fixture tools downstream";
-  }
 }

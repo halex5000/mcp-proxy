@@ -4,6 +4,20 @@ Purpose: prove the Connections panel feels like product UX, not developer toolin
 
 Normal UI should never show raw MCP, JSON-RPC, stdio, process, or protocol errors. Those belong only in Advanced Diagnostics.
 
+## Automated Test
+
+```bash
+npm run test:extension-ui
+```
+
+This test verifies:
+
+- every required state has a stable icon, label, message, context value, and primary action
+- hidden tools are described as "advanced tools hidden" in friendly words
+- raw protocol/process details from `detail` and `technicalMessage` do not leak into normal tooltip text
+- enable/disable command rules update the enabled connection list deterministically
+- every simulation mode has a picker description
+
 ## Required States
 
 | State | Icon | Label | Explanation | Primary action | Secondary action | Advanced diagnostics |

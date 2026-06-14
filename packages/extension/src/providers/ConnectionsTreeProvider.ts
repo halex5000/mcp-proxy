@@ -1,8 +1,12 @@
 import * as vscode from "vscode";
 import type { HealthMonitor } from "../health/HealthMonitor.js";
-import type { ConnectionHealth, ConnectionHealthStatus } from "@mcp-proxy/shared";
+import type { ConnectionHealth } from "@mcp-proxy/shared";
 import type { ConnectionId } from "@mcp-proxy/shared";
 import { CONNECTION_REGISTRY } from "../connections/ConnectionRegistry.js";
+import {
+  presentConnection,
+  presentConnectionInfoItems,
+} from "./ConnectionPresentation.js";
 
 /**
  * ConnectionsTreeProvider drives the Connections side panel.
@@ -70,33 +74,24 @@ export class ConnectionsTreeProvider
     connectionId: ConnectionId,
     health: ConnectionHealth
   ): ConnectionTreeItem[] {
-    if (health.toolCount === 0) return [];
-    return [
-      new ConnectionTreeItem({
-        kind: "info",
-        label: `${health.toolCount} tools available`,
-        connectionId,
-        health,
-        collapsibleState: vscode.TreeItemCollapsibleState.None,
-      }),
-      ...(health.hiddenToolCount > 0
-        ? [
-            new ConnectionTreeItem({
-              kind: "info",
-              label: `${health.hiddenToolCount} tools hidden (safe mode)`,
-              connectionId,
-              health,
-              collapsibleState: vscode.TreeItemCollapsibleState.None,
-            }),
-          ]
-        : []),
-    ];
+    return presentConnectionInfoItems(health).map(
+      (item) =>
+        new ConnectionTreeItem({
+          kind: "info",
+          label: item.label,
+          iconId: item.iconId,
+          connectionId,
+          health,
+          collapsibleState: vscode.TreeItemCollapsibleState.None,
+        })
+    );
   }
 }
 
 interface ConnectionTreeItemOptions {
   kind: "connection" | "info";
   label: string;
+  iconId?: string;
   connectionId?: ConnectionId;
   health?: ConnectionHealth;
   collapsibleState: vscode.TreeItemCollapsibleState;
@@ -115,55 +110,19 @@ export class ConnectionTreeItem extends vscode.TreeItem {
     this.health = opts.health;
 
     if (opts.kind === "connection" && opts.health) {
-      this.description = opts.health.label;
-      this.tooltip = new vscode.MarkdownString(
-        this.buildTooltip(opts.health)
-      );
-      this.iconPath = this.iconForStatus(opts.health.status);
-      // contextValue drives which inline actions appear via menus in package.json
-      this.contextValue = `connection-${opts.health.status}`;
+      const presentation = presentConnection(opts.health);
+      this.description = presentation.description;
+      this.tooltip = new vscode.MarkdownString(presentation.tooltipMarkdown);
+      this.iconPath = presentation.iconColor
+        ? new vscode.ThemeIcon(
+            presentation.iconId,
+            new vscode.ThemeColor(presentation.iconColor)
+          )
+        : new vscode.ThemeIcon(presentation.iconId);
+      this.contextValue = presentation.contextValue;
     } else if (opts.kind === "info") {
-      this.iconPath = new vscode.ThemeIcon("info");
+      this.iconPath = new vscode.ThemeIcon(opts.iconId ?? "info");
       this.contextValue = "tool-info";
-    }
-  }
-
-  private buildTooltip(health: ConnectionHealth): string {
-    const lines = [`**${health.label}**`, "", health.message];
-    if (health.detail) lines.push("", `_${health.detail}_`);
-    if (health.toolCount > 0) lines.push("", `${health.toolCount} tools available`);
-    if (health.hiddenToolCount > 0) {
-      lines.push(`${health.hiddenToolCount} tools hidden by safe mode`);
-    }
-    if (health.crashCount > 0) {
-      lines.push("", `Crashed ${health.crashCount} time(s) since last restart`);
-    }
-    return lines.join("\n");
-  }
-
-  private iconForStatus(status: ConnectionHealthStatus): vscode.ThemeIcon {
-    switch (status) {
-      case "ready":
-        return new vscode.ThemeIcon("check", new vscode.ThemeColor("testing.iconPassed"));
-      case "starting":
-      case "stopping":
-        return new vscode.ThemeIcon("loading~spin");
-      case "degraded":
-        return new vscode.ThemeIcon("warning", new vscode.ThemeColor("list.warningForeground"));
-      case "crashed":
-        return new vscode.ThemeIcon("error", new vscode.ThemeColor("testing.iconFailed"));
-      case "auth_required":
-        return new vscode.ThemeIcon("key");
-      case "not_configured":
-        return new vscode.ThemeIcon("circle-outline");
-      case "dependency_missing":
-        return new vscode.ThemeIcon("cloud-download");
-      case "blocked_by_policy":
-        return new vscode.ThemeIcon("lock");
-      case "version_mismatch":
-        return new vscode.ThemeIcon("versions");
-      case "unsafe_disabled":
-        return new vscode.ThemeIcon("circle-slash");
     }
   }
 }
