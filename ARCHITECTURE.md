@@ -42,6 +42,38 @@ Register ONE thin MCP proxy as the single VS Code MCP endpoint. The gateway inte
 - **Local stdio servers** (Playwright, local knowledge): Gateway proxies fully — it starts the process, connects an MCP client, and forwards tool calls.
 - **Remote HTTP servers** (GitHub remote MCP, Atlassian): Registered via URL through the same gateway server, or detected from VS Code auth state. For MVP, GitHub remote MCP can be registered directly with an auth token; the gateway still tracks its health.
 
+### Transport Decision (resolves Open Questions 1 & 6) — investigated 2026-06-14
+
+**Register the gateway to VS Code as an `McpHttpServerDefinition` pointing at a localhost URI, NOT as an `McpStdioServerDefinition`.**
+
+Investigation of the VS Code MCP API (`vscode.lm.registerMcpServerDefinitionProvider`) established:
+
+- `McpHttpServerDefinition(label, uri, headers?, version?)` accepts any URI, **including `http://127.0.0.1:<port>`**. VS Code connects to it as a client; it does **not** spawn a process for HTTP definitions.
+- `McpStdioServerDefinition(label, command, args, cwd?, env?, version?)` is spawned and lifecycle-managed by **VS Code**, not the extension.
+
+This is decisive. The original spike used a stdio definition, which created a flaw: VS Code would spawn its own copy of the gateway for MCP, while the extension spawned a *second* copy for the control API. The extension would then be monitoring/restarting the wrong process — not the one Copilot actually talks to.
+
+**Resolution — one process, two endpoints, one port (multiplexed):**
+
+```
+Gateway process (spawned & owned by the extension)
+  └── single HTTP server on 127.0.0.1:<port>
+        ├── POST /mcp        ← VS Code connects here (Streamable HTTP MCP transport)
+        │                      registered via McpHttpServerDefinition(uri=.../mcp,
+        │                      headers={ Authorization: Bearer <session-secret> })
+        └── /control/*       ← extension connects here (health, restart, configure, logs)
+```
+
+Consequences:
+- **The extension owns the entire lifecycle.** It spawns the gateway, monitors the exact process Copilot uses, and restarts it directly. No second VS Code-spawned process.
+- **Downstream restarts never disturb Copilot's session.** Restarting the GitHub or Jira connection happens *inside* the gateway; the `/mcp` endpoint stays up. VS Code's MCP session is only affected by a full gateway-process restart (rare), which is handled by firing `onDidChangeMcpServerDefinitions` so VS Code reconnects to the new port. **This resolves Open Question 1 (session continuity).**
+- **The `headers` field is the auth seam.** The extension generates a per-session bearer token, passes it in the `McpHttpServerDefinition` headers, and the gateway rejects any `/mcp` request without it — so only VS Code's client (not other local processes) can reach the MCP endpoint.
+- **No magic-variable dependency.** The gateway resolves `${workspaceFolder}` itself from config pushed over `/control`, sidestepping vscode#290325 (workspace definitions not resolving `${workspaceFolder}`).
+
+Trade-off accepted: the gateway must implement the MCP **Streamable HTTP** server transport (`StreamableHTTPServerTransport` from `@modelcontextprotocol/sdk`) instead of stdio. This is well-supported and is a net simplification versus coordinating two processes.
+
+First-run caveat (applies to any registration method): VS Code does **not** autostart programmatically-registered MCP servers — tools are cached only after the first start, after which autostart works. The extension cannot force the first start, so the MVP must guide the user (or trigger it) on first run. See Risk: "VS Code API Maturity."
+
 ---
 
 ## 3. Architecture Diagram
@@ -50,7 +82,8 @@ Register ONE thin MCP proxy as the single VS Code MCP endpoint. The gateway inte
 ┌─────────────────────────────────────────────────────────────┐
 │  VS Code / GitHub Copilot Chat                              │
 └──────────────────────────┬──────────────────────────────────┘
-                           │ MCP stdio protocol
+                           │ MCP Streamable HTTP → 127.0.0.1:<port>/mcp
+                           │ (VS Code is a client; it does NOT spawn the gateway)
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Gateway Process  (Node.js, bundled with extension)         │
@@ -537,14 +570,14 @@ If this works, the architecture is proven.
 
 ## Open Questions
 
-1. **MCP session continuity**: When the gateway restarts (e.g., after a crash), does VS Code automatically reconnect the MCP session, or does the user need to reload the window? If reload is required, we need to minimize gateway restarts and add a "Reconnect without reload" path.
+1. **MCP session continuity** — *RESOLVED (2026-06-14).* By registering the gateway as an `McpHttpServerDefinition` at a fixed localhost endpoint, downstream connection restarts happen inside the gateway and never tear down VS Code's MCP session — the `/mcp` HTTP endpoint stays up. Only a full gateway-process restart changes the URI; that fires `onDidChangeMcpServerDefinitions` and VS Code reconnects to the new port. See "Transport Decision" in §2. Still to verify empirically: how gracefully Copilot handles an in-flight tool call during a full gateway restart.
 
-2. **Copilot tool discovery timing**: Are tools discovered once at session start (requiring gateway restart to pick up new tools), or are they re-enumerated on demand? This affects how we handle mid-session connection state changes.
+2. **Copilot tool discovery timing**: Are tools discovered once at session start (requiring gateway restart to pick up new tools), or are they re-enumerated on demand? This affects how we handle mid-session connection state changes. *Partial finding:* VS Code does not autostart programmatically-registered servers — tools are cached after first start, then autostart on subsequent launches (vscode#259783). So new downstream tools appearing mid-session may not surface to Copilot until the MCP session is re-established. Needs empirical confirmation of whether `onDidChangeMcpServerDefinitions` forces re-enumeration.
 
 3. **GitHub Copilot remote MCP**: Is the GitHub remote MCP endpoint (`api.githubcopilot.com/mcp/`) already available to Copilot when the user is signed in? If so, we may not need to register it via our extension — we'd only need to detect and surface its health state.
 
-4. **VS Code MCP API for remote servers**: Does `vscode.lm.registerMcpServerDefinitionProvider` support registering remote HTTP/SSE MCP servers, or is that handled differently (e.g., via `mcp.json` only)? The spike will answer this empirically.
+4. **VS Code MCP API for remote servers** — *RESOLVED (2026-06-14).* Yes. `McpHttpServerDefinition(label, uri, headers?, version?)` registers a remote/HTTP MCP server programmatically; VS Code connects as a client and does not spawn it. `headers` carries auth (e.g. `Authorization: Bearer …`). This is exactly what enables the single-process gateway design.
 
-5. **Extension activation timing**: `onStartupFinished` may be too early for some environments (slow machines, remote containers). Should we delay gateway startup until Copilot first attempts a tool call?
+5. **Extension activation timing**: `onStartupFinished` may be too early for some environments (slow machines, remote containers). Should we delay gateway startup until Copilot first attempts a tool call? *Note:* `provideMcpServerDefinitions` is called eagerly by VS Code and must not perform user interaction; auth/interaction belongs in `resolveMcpServerDefinition`, which is called when the server is started.
 
-6. **Gateway process identity**: The extension spawns a control-API gateway AND VS Code spawns a separate MCP-stdio gateway from the same binary. These are two processes of the same code. Should they be the same process (via an IPC channel from extension to VS Code's managed process) or stay separate? A unified process would be cleaner but requires VS Code to expose the MCP process handle.
+6. **Gateway process identity** — *RESOLVED (2026-06-14).* The dual-process problem is eliminated by using `McpHttpServerDefinition` instead of `McpStdioServerDefinition`. For stdio definitions VS Code owns the process lifecycle (so the extension would be monitoring a different process than Copilot uses); for HTTP definitions VS Code is merely a client. The extension therefore spawns **one** gateway process and exposes both the MCP transport (`POST /mcp`) and the control API (`/control/*`) on a single multiplexed localhost port. See "Transport Decision" in §2. **Code impact:** `ManagedMcpProvider` must return an `McpHttpServerDefinition` (not `StdioMcpServerDefinition`), and the gateway must serve `StreamableHTTPServerTransport` on `/mcp` rather than stdio — the current spike still uses the stdio path and needs this refactor.
