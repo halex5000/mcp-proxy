@@ -1,20 +1,25 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { ConnectionId } from "@mcp-proxy/shared";
 import type { ManagedProcess } from "../supervisor/ManagedProcess.js";
+import { StreamMcpTransport } from "./StreamMcpTransport.js";
 import { ToolFilter, type FilteredTool, type RawTool } from "./ToolFilter.js";
 import type { ConnectionDefinition } from "@mcp-proxy/shared";
 
 /**
- * McpProxy wraps a single downstream MCP server process with an MCP client,
- * discovers its tools, and proxies tool calls on behalf of the gateway server.
+ * McpProxy connects to an already-running downstream MCP server process.
  *
- * The gateway's MCP server (exposed to VS Code) aggregates tools from all
- * active proxies, namespaced by connection ID to avoid collisions.
+ * It uses StreamMcpTransport to speak MCP over the process's existing
+ * stdin/stdout streams — the streams that ManagedProcess opened when it
+ * spawned the process. No second process is spawned here; one supervisor-owned
+ * process is the canonical instance.
+ *
+ * On restart, the supervisor calls ManagedProcess.restart(), which replaces
+ * the underlying process. McpProxy.reconnect() must then be called to attach
+ * a fresh Client to the new process's streams.
  */
 export class McpProxy {
   readonly connectionId: ConnectionId;
-  private process: ManagedProcess;
+  private managedProcess: ManagedProcess;
   private definition: ConnectionDefinition;
   private client: Client | null = null;
   private filter: ToolFilter;
@@ -30,24 +35,28 @@ export class McpProxy {
 
   constructor(
     connectionId: ConnectionId,
-    process: ManagedProcess,
+    managedProcess: ManagedProcess,
     definition: ConnectionDefinition
   ) {
     this.connectionId = connectionId;
-    this.process = process;
+    this.managedProcess = managedProcess;
     this.definition = definition;
     this.filter = new ToolFilter(connectionId, definition);
   }
 
   async connect(): Promise<void> {
-    if (!this.process.stdin || !this.process.stdout) {
-      throw new Error(`Process for ${this.connectionId} has no stdio streams`);
+    const { stdin, stdout } = this.managedProcess;
+
+    if (!stdin || !stdout) {
+      throw new Error(
+        `Process for ${this.connectionId} has no stdio streams — ` +
+          `ensure ManagedProcess was started before calling connect()`
+      );
     }
 
-    const transport = new StdioClientTransport({
-      command: this.definition.command!,
-      args: this.definition.args ?? [],
-    });
+    // Connect to the already-running downstream server. StreamMcpTransport
+    // reads from stdout (MCP responses) and writes to stdin (MCP requests).
+    const transport = new StreamMcpTransport(stdout, stdin);
 
     this.client = new Client(
       { name: "mcp-gateway", version: "0.1.0" },
@@ -62,6 +71,12 @@ export class McpProxy {
     await this.client?.close();
     this.client = null;
     this._tools = [];
+  }
+
+  /** Reconnect after a process restart (new stdin/stdout streams). */
+  async reconnect(): Promise<void> {
+    await this.disconnect();
+    await this.connect();
   }
 
   async refreshTools(): Promise<void> {
@@ -93,11 +108,9 @@ export class McpProxy {
       );
     }
 
-    const result = await this.client.callTool({
-      name: tool.name,  // original name, not namespaced
+    return await this.client.callTool({
+      name: tool.name,
       arguments: args,
     });
-
-    return result;
   }
 }

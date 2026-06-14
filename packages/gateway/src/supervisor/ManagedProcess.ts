@@ -88,8 +88,10 @@ export class ManagedProcess {
 
     this.proc = proc;
 
-    proc.stdout?.on("data", (chunk: Buffer) => {
-      this.appendLog("stdout", chunk.toString());
+    proc.stdout?.on("data", (_chunk: Buffer) => {
+      // stdout carries MCP protocol messages (newline-delimited JSON).
+      // McpProxy reads these directly via StreamMcpTransport. We do NOT
+      // consume or log them here — doing so would corrupt the protocol stream.
     });
 
     proc.stderr?.on("data", (chunk: Buffer) => {
