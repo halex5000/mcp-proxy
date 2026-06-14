@@ -1,0 +1,18 @@
+{
+  "name": "mcp-proxy-workspace",
+  "private": true,
+  "workspaces": [
+    "packages/shared",
+    "packages/gateway",
+    "packages/extension"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "npm run dev --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
