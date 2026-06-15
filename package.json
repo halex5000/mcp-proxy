@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "bundle": "node scripts/bundle.mjs",
     "dev": "npm run dev --workspaces --if-present",
     "smoke": "npm run build && node --test tests/gateway.integration.test.mjs",
     "test": "npm run build && node --test tests/*.test.mjs",
@@ -17,12 +18,14 @@
     "test:vscode": "npm run build && node tests/vscode-extension-host/run.mjs",
     "test:integration": "npm run build && node --test tests/gateway.integration.test.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "clean": "npm run clean --workspaces --if-present"
+    "clean": "npm run clean --workspaces --if-present",
+    "package": "npm run build && node scripts/bundle.mjs && cd packages/extension && npx @vscode/vsce package --no-dependencies"
   },
   "engines": {
     "node": ">=20.0.0"
   },
   "devDependencies": {
-    "@vscode/test-electron": "^3.0.0"
+    "@vscode/test-electron": "^3.0.0",
+    "esbuild": "^0.28.1"
   }
 }

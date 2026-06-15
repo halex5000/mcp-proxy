@@ -269,11 +269,15 @@ export class ConnectionManager implements vscode.Disposable {
 
   private resolveFakeServerEntrypoint(): string {
     const candidates = [
+      // esbuild self-contained bundle (production, preferred)
+      path.join(this.context.extensionPath, "dist", "fake-mcp-server", "index.cjs"),
+      // tsc-compiled copy (production, fallback)
       path.join(this.context.extensionPath, "dist", "fake-mcp-server", "index.js"),
+      // Monorepo dev layout
       path.join(this.context.extensionPath, "..", "fake-mcp-server", "dist", "index.js"),
     ];
 
-    return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[1];
+    return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[2];
   }
 
   // ── Atlassian sign-in flow ─────────────────────────────────────────────────

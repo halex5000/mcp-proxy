@@ -151,21 +151,24 @@ export class GatewayProcess implements vscode.Disposable {
   }
 
   private resolveGatewayPath(): string {
-    // The gateway entrypoint lives in a different place depending on how the
-    // extension is running:
+    // Resolution order — first match wins:
     //
-    //   • Production (packaged .vsix): the gateway is bundled with the extension
-    //     at dist/gateway-server/index.js.
-    //   • Development (Extension Development Host in this monorepo): the gateway
-    //     is a sibling workspace package at packages/gateway/dist/index.js.
+    //   1. Production (.vsix / bundled): esbuild CJS bundle created by
+    //      `npm run bundle`, placed at dist/gateway-server/index.cjs.
+    //   2. Production (.vsix / tsc-compiled): fallback JS placed at the same
+    //      directory by a manual copy step.
+    //   3. Development (Extension Development Host in this monorepo): sibling
+    //      workspace package compiled by tsc.
     //
     // Note: dist/gateway/ is already used for the extension's OWN compiled
-    // GatewayProcess/GatewayClient, so the bundled gateway server must NOT be
-    // placed there — we use dist/gateway-server/ to avoid the collision.
+    // source, so the bundled gateway server lives at dist/gateway-server/ to
+    // avoid the collision.
     const candidates = [
-      // Packaged / bundled gateway server
+      // 1. esbuild self-contained bundle (production, preferred)
+      path.join(this.extensionPath, "dist", "gateway-server", "index.cjs"),
+      // 2. tsc-compiled copy (production, fallback)
       path.join(this.extensionPath, "dist", "gateway-server", "index.js"),
-      // Monorepo dev layout: packages/extension → packages/gateway
+      // 3. Monorepo dev layout
       path.join(this.extensionPath, "..", "gateway", "dist", "index.js"),
     ];
 
@@ -178,8 +181,8 @@ export class GatewayProcess implements vscode.Disposable {
     throw new Error(
       "Could not locate the gateway entrypoint. Tried:\n" +
         candidates.map((c) => `  - ${c}`).join("\n") +
-        "\n\nIf you are running from source, build the gateway first: " +
-        "`npm run build` from the repo root (this produces packages/gateway/dist/index.js)."
+        "\n\nFor production: run `npm run bundle` from the repo root.\n" +
+        "For development: run `npm run build` from the repo root."
     );
   }
 }

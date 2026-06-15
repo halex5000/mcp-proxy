@@ -1,0 +1,19 @@
+# Source files — the esbuild bundle in dist/ makes them unnecessary in production.
+src/
+
+# TypeScript project config — not needed at runtime.
+tsconfig.json
+
+# Dev-only VS Code workspace settings.
+.vscode/
+
+# esbuild source maps kept for now (useful for diagnosing issues in the field).
+# Uncomment the next line to strip them and reduce vsix size by ~5 MB.
+# **/*.map
+
+# npm packaging artefacts.
+*.vsix
+package-lock.json
+
+# Test harness — not shipped.
+test/
